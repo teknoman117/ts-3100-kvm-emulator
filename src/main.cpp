@@ -59,30 +59,6 @@ void handlerRtc(bool is_write, uint16_t addr, void* data, size_t length, size_t 
     // really need to do something about actually measuring time here
 }
 
-// see page 6-7 (pg. 112) of 386EX manual
-void handlerClockPrescaler(bool is_write, uint16_t addr, void* data, size_t length, size_t count) {
-    static uint16_t register_ = 0;
-    assert(count == 1);
-
-    if (length == 2) {
-        uint16_t* data_ = reinterpret_cast<uint16_t*>(data);
-        if (is_write)
-            register_ = *data_;
-        else
-            *data_ = register_;
-    } else if (length == 1) {
-        uint8_t* data_ = reinterpret_cast<uint8_t*>(data);
-        uint8_t* register__ = reinterpret_cast<uint8_t*>(&register_);
-        if (is_write)
-            register__[addr&1] = data_[addr&1];
-        else
-            data_[addr&1] = register__[addr&1];
-    }
-
-    // update some units
-    timer.setPrescaler(register_ + 2);
-}
-
 // see page 5-12 (pg. 85) of 386EX manual
 void handlerTimerConfiguration(bool is_write, uint16_t addr, void* data, size_t length, size_t count) {
     static uint8_t register_ = 0;
@@ -94,26 +70,6 @@ void handlerTimerConfiguration(bool is_write, uint16_t addr, void* data, size_t 
         register_ = *data_;
     else
         *data_ = register_;
-}
-
-void handlerTimer(bool is_write, uint16_t addr, void* data, size_t length, size_t count) {
-    assert(length == 1);
-    assert(count == 1);
-
-    uint8_t* data_ = reinterpret_cast<uint8_t*>(data);
-    if (is_write) {
-        if (addr == 0x43) {
-            ProgrammableIntervalTimer::ChannelCommand command;
-            command.value = *data_;
-            timer.writeCommand(command);
-        } else {
-            timer.writeRegister(addr & 0x3, *data_);
-        }
-    } else {
-        if (addr < 0x43) {
-            *data_ = timer.readRegister(addr & 0x3);
-        }
-    }
 }
 
 void handlerPOSTCode(bool is_write, uint16_t addr, void* data, size_t length, size_t count) {
@@ -339,7 +295,6 @@ void handlerPort1Pin(bool is_write, uint16_t addr, void* data, size_t length, si
 std::map<AddressRange, std::shared_ptr<DevicePio>> pioDeviceTable;
 
 std::map<AddressRange, io_handler_t> ioHandlerTable = {
-    { { 0x40,   0x04 }, handlerTimer },
     { { 0x60,   0x05 }, handlerKeyboard },
     { { 0x70,   0x02 }, handlerRtc },
     { { 0x72,   0x02 }, handlerLCD },
@@ -352,7 +307,6 @@ std::map<AddressRange, io_handler_t> ioHandlerTable = {
     { { 0x2f8,  0x08 }, handlerCOM2 },
     { { 0x3f8,  0x08 }, handlerCOM1 },
     { { 0xF400, 0x40 }, handlerChipSelectUnit },
-    { { 0xF804, 0x02 }, handlerClockPrescaler },
     { { 0xF834, 0x01 }, handlerTimerConfiguration },
     { { 0xF860, 0x01 }, handlerPort1Pin },
 };
@@ -610,11 +564,11 @@ int main (int argc, char** argv) {
 
     // -------------------- DEVICES ----------------------
     auto timer0 = std::make_shared<ProgrammableIntervalTimer>();
-    //pioDeviceTable.emplace(AddressRange{0x40, 0x04}, timer0);
+    pioDeviceTable.emplace(AddressRange{0x40, 0x04}, timer0);
 
     std::vector<std::shared_ptr<Prescalable>> prescalableDevices = { timer0 };
     auto prescaler = std::make_shared<i386EXClockPrescaler>(prescalableDevices);
-    //pioDeviceTable.emplace(AddressRange{0xF804, 0x02}, prescaler);
+    pioDeviceTable.emplace(AddressRange{0xF804, 0x02}, prescaler);
 
 #ifndef NDEBUG
     // setup a disassembly library

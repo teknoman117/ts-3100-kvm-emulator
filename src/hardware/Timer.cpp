@@ -216,13 +216,13 @@ void ProgrammableIntervalTimer::resolveTimers() {
         }
 
         // output value
-        printf("timer %d value: %u\n", i, state[i].value);
+        //printf("timer %d value: %u\n", i, state[i].value);
     }
 }
 
 // DevicePio 8 bit interface
 void ProgrammableIntervalTimer::iowrite8(uint16_t address, uint8_t data) {
-    if (address & 0x3 == 0x03) {
+    if ((address & 0x3) == 0x03) {
         writeCommand({ .value = data });
     } else {
         writeRegister(address & 0x3, data);
@@ -230,7 +230,7 @@ void ProgrammableIntervalTimer::iowrite8(uint16_t address, uint8_t data) {
 }
 
 uint8_t ProgrammableIntervalTimer::ioread8(uint16_t address) {
-    if (address & 0x3 != 0x03) {
+    if ((address & 0x3) != 0x03) {
         return readRegister(address & 0x3);
     }
     return 0;
