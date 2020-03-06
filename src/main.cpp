@@ -449,6 +449,19 @@ int main (int argc, char** argv) {
     }
     // -----------------------------------------------------------------------------
 
+    ret = ioctl(vmFd, KVM_CREATE_IRQCHIP);
+    if (ret == -1) {
+        perror("KVM_CREATE_IRQCHIP");
+        return EXIT_FAILURE;
+    }
+
+    struct kvm_pit_config configurationPIT = { .flags = KVM_PIT_SPEAKER_DUMMY };
+    ret = ioctl(vmFd, KVM_CREATE_PIT2, &configurationPIT);
+    if (ret == -1) {
+        perror("KVM_CREATE_PIT2");
+        return EXIT_FAILURE;
+    }
+
     // create a virtual cpu for the vm
     int vcpuFd = ioctl(vmFd, KVM_CREATE_VCPU, (unsigned long) 0);
     if (vcpuFd == -1) {
@@ -563,12 +576,12 @@ int main (int argc, char** argv) {
     }
 
     // -------------------- DEVICES ----------------------
-    auto timer0 = std::make_shared<ProgrammableIntervalTimer>();
-    pioDeviceTable.emplace(AddressRange{0x40, 0x04}, timer0);
+    //auto timer0 = std::make_shared<ProgrammableIntervalTimer>();
+    //pioDeviceTable.emplace(AddressRange{0x40, 0x04}, timer0);
 
-    std::vector<std::shared_ptr<Prescalable>> prescalableDevices = { timer0 };
-    auto prescaler = std::make_shared<i386EXClockPrescaler>(prescalableDevices);
-    pioDeviceTable.emplace(AddressRange{0xF804, 0x02}, prescaler);
+    //std::vector<std::shared_ptr<Prescalable>> prescalableDevices = { timer0 };
+    //auto prescaler = std::make_shared<i386EXClockPrescaler>(prescalableDevices);
+    //pioDeviceTable.emplace(AddressRange{0xF804, 0x02}, prescaler);
 
 #ifndef NDEBUG
     // setup a disassembly library
