@@ -10,6 +10,8 @@
 #include <fcntl.h>
 #include <linux/kvm.h>
 #include <sys/ioctl.h>
+#include <sys/eventfd.h>
+#include <sys/timerfd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/mman.h>
@@ -80,92 +82,11 @@ void handlerPOSTCode(bool is_write, uint16_t addr, void* data, size_t length, si
     }
 }
 
-int clientFd = -1;
-
 void handlerKeyboard(bool is_write, uint16_t addr, void* data, size_t length, size_t count) {
     //fprintf(stderr, "PC SPEAKER ACCESSED\n");
     uint8_t* data_ = reinterpret_cast<uint8_t*>(data);
     if (!is_write) {
         *data_ = 0;
-    }
-}
-
-void handlerCOM1(bool is_write, uint16_t addr, void* data, size_t length, size_t count) {
-    assert(length == 1);
-    assert(count == 1);
-
-    printf("IGNORING COM1 operation\n");
-}
-
-void handlerCOM2(bool is_write, uint16_t addr, void* data, size_t length, size_t count) {
-    assert(length == 1);
-    assert(count == 1);
-    static bool DLAB = false;
-
-    // check if characters are available
-    fd_set rfd;
-    FD_ZERO(&rfd);
-    FD_SET(clientFd, &rfd);
-    struct timeval timeout{0};
-
-    int ret = select(clientFd + 1, &rfd, nullptr, nullptr, &timeout);
-    if (ret == -1) {
-        perror("select");
-    }
-
-    uint8_t* data_ = reinterpret_cast<uint8_t*>(data);
-    if (is_write) {
-        switch (addr & 0x07) {
-            case 0:
-                if (!DLAB) {
-                    write(clientFd, data, 1);
-                    //std::this_thread::sleep_for(std::chrono::milliseconds(1));
-                }
-                /*else
-                    printf("LOADING LB of BAUD = %02x\n", *data_);*/
-                break;
-            case 1:
-                /*if (!DLAB)
-                    printf("LOADING INTERRUPT ENABLE REGISTER = %02x\n", *data_);
-                else
-                    printf("LOADING HB of BAUD = %02x\n", *data_);*/
-                break;
-            case 2:
-                //printf("LOADING INTERRUPT IDENTIFICATION + FIFO CONTROL REGISTER = %02x\n", *data_);
-                break;
-            case 3:
-                DLAB = !!(*data_ & 0x80);
-                break;
-            case 4:
-                //printf("LOADING MODEM CONTROL REGISTER = %02x\n", *data_);
-                break;
-            case 5:
-                //printf("LOADING LINE STATUS REGISTER = %02x\n", *data_);
-                break;
-            case 6:
-                //printf("LOADING MODEM STATUS REGISTER = %02x\n", *data_);
-                break;
-            case 7:
-                //printf("LOADING SCRATCH REGISTER = %02x\n", *data_);
-                break;
-        }
-    } else {
-        switch (addr & 0x07) {
-            case 0:
-                if (!DLAB) {
-                    read(clientFd, data, 1);
-                }
-                break;
-            case 5:
-                *data_ = 0x60;
-                if (ret > 0) {
-                    *data_ |= 0x01;
-                }
-                break;
-            default:
-                *data_ = 0;
-                break;
-        }
     }
 }
 
@@ -304,8 +225,6 @@ std::map<AddressRange, io_handler_t> ioHandlerTable = {
     { { 0x80,   0x01 }, handlerPOSTCode },
     { { 0x92,   0x01 }, handlerA20Gate },
     { { 0x198,  0x08 }, handlerManufacturerSpecific },
-    { { 0x2f8,  0x08 }, handlerCOM2 },
-    { { 0x3f8,  0x08 }, handlerCOM1 },
     { { 0xF400, 0x40 }, handlerChipSelectUnit },
     { { 0xF834, 0x01 }, handlerTimerConfiguration },
     { { 0xF860, 0x01 }, handlerPort1Pin },
@@ -351,6 +270,7 @@ int main (int argc, char** argv) {
     // ----------------------- MEMORY MAP CREATION ----------------------------------
     // open rom image
     int romFd = open("roms/flash.bin", O_RDONLY | O_CLOEXEC);
+    //int romFd = open("roms/flash2.bin", O_RDONLY | O_CLOEXEC);
     if (romFd == -1) {
         perror("unable to open the rom.");
         return EXIT_FAILURE;
@@ -462,6 +382,19 @@ int main (int argc, char** argv) {
         return EXIT_FAILURE;
     }
 
+    /*int efd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    if (efd == -1) {
+        perror("eventfd");
+        return EXIT_FAILURE;
+    }
+
+    struct kvm_irqfd irqfd { .fd = (__u32) efd, .gsi = 8, .flags = 0, .resamplefd = 0 };
+    ret = ioctl(vmFd, KVM_IRQFD, &irqfd);
+    if (ret == -1) {
+        perror("KVM_IRQFD");
+        return EXIT_FAILURE;
+    }*/
+
     // create a virtual cpu for the vm
     int vcpuFd = ioctl(vmFd, KVM_CREATE_VCPU, (unsigned long) 0);
     if (vcpuFd == -1) {
@@ -500,8 +433,8 @@ int main (int argc, char** argv) {
     }
 
     sregs.cr0 = 0;
-    sregs.cs.base = 0x03470000;
-    sregs.cs.selector = 0x7000;
+    sregs.cs.base = 0x000FFFF0;
+    sregs.cs.selector = 0xFFFF;
     ret = ioctl(vcpuFd, KVM_SET_SREGS, &sregs);
     if (ret == -1) {
         perror("KVM_SET_SREGS");
@@ -511,7 +444,7 @@ int main (int argc, char** argv) {
     struct kvm_regs regs = {
         .rax = 2,
         .rbx = 2,
-        .rip = 0xFFF0,
+        .rip = 0,
         .rflags = 0x2
     };
 
@@ -521,7 +454,8 @@ int main (int argc, char** argv) {
         return EXIT_FAILURE;
     }
 
-#ifndef NDEBUG
+//#ifndef NDEBUG
+#if 0
     // enable single stepping
     struct kvm_guest_debug debug = {
         .control = KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_SINGLESTEP
@@ -534,47 +468,6 @@ int main (int argc, char** argv) {
     }
 #endif /* NDEBUG */
 
-    // setup console server
-    int serverFd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (serverFd == -1) {
-        perror("unable to open unix socket server.");
-        return EXIT_FAILURE;
-    }
-
-    struct sockaddr_un addr;
-    memset(&addr, 0, sizeof addr);
-    addr.sun_family = AF_UNIX;
-    const char* socketPath = "/tmp/3100.socket";
-    strcpy(addr.sun_path, socketPath);
-
-    if (bind(serverFd, (struct sockaddr*) &addr, sizeof addr) == -1) {
-        perror("unable to bind unix socket server.");
-        return EXIT_FAILURE;
-    }
-
-    if (listen(serverFd, 5) == -1) {
-        perror("unable to listen on unix server socket");
-        return EXIT_FAILURE;
-    }
-
-    clientFd = accept(serverFd, NULL, NULL);
-    if (clientFd == -1) {
-        perror("failed to accept connection on unix socket");
-        return EXIT_FAILURE;
-    }
-
-    ret = fcntl(clientFd, F_GETFL, 0);
-    if (ret == -1) {
-        perror("failed to get flags of client socket");
-        return EXIT_FAILURE;
-    }
-
-    ret = fcntl(clientFd, F_SETFL, ret | O_NONBLOCK);
-    if (ret == -1) {
-        perror("failed to set flags of client socket");
-        return EXIT_FAILURE;
-    }
-
     // -------------------- DEVICES ----------------------
     //auto timer0 = std::make_shared<ProgrammableIntervalTimer>();
     //pioDeviceTable.emplace(AddressRange{0x40, 0x04}, timer0);
@@ -582,8 +475,34 @@ int main (int argc, char** argv) {
     //std::vector<std::shared_ptr<Prescalable>> prescalableDevices = { timer0 };
     //auto prescaler = std::make_shared<i386EXClockPrescaler>(prescalableDevices);
     //pioDeviceTable.emplace(AddressRange{0xF804, 0x02}, prescaler);
+    
+    auto com1 = std::make_shared<Serial16450>();
+    if (!com1->start("/tmp/3100.com1.socket", vmFd, 4)) {
+        return EXIT_FAILURE;
+    }
 
-#ifndef NDEBUG
+    auto com2 = std::make_shared<Serial16450>();
+    if (!com2->start("/tmp/3100.com2.socket", vmFd, 3)) {
+        return EXIT_FAILURE;
+    }
+
+    auto com3 = std::make_shared<Serial16450>();
+    if (!com3->start("/tmp/3100.com3.socket", vmFd, 4)) {
+        return EXIT_FAILURE;
+    }
+
+    auto com4 = std::make_shared<Serial16450>();
+    if (!com4->start("/tmp/3100.com4.socket", vmFd, 3)) {
+        return EXIT_FAILURE;
+    }
+
+    pioDeviceTable.emplace(AddressRange{0x3f8, 0x08}, com1);
+    pioDeviceTable.emplace(AddressRange{0x2f8, 0x08}, com2);
+    pioDeviceTable.emplace(AddressRange{0x3e8, 0x08}, com3);
+    pioDeviceTable.emplace(AddressRange{0x2e8, 0x08}, com4);
+
+//#ifndef NDEBUG
+#if 0
     // setup a disassembly library
     ZydisDecoder decoder;
     ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_REAL_16, ZYDIS_ADDRESS_WIDTH_16);
@@ -601,7 +520,8 @@ int main (int argc, char** argv) {
             return EXIT_FAILURE;
         }
 
-#ifndef NDEBUG
+//#ifndef NDEBUG
+#if 0
         // get the register state
         memset(&regs, 0, sizeof regs);
         memset(&sregs, 0, sizeof sregs);
@@ -633,10 +553,10 @@ int main (int argc, char** argv) {
             }
 
             ZydisDecodedInstruction instruction;
-            int count = 17;
+            int count = 1;
             printf("--- next instructions ---\n");
-            while (ZYAN_SUCCESS(ZydisDecoderDecodeBuffer(&decoder, codeBuffer + offset, length, &instruction))
-                    && --count) {
+            while (count--
+                    && ZYAN_SUCCESS(ZydisDecoderDecodeBuffer(&decoder, codeBuffer + offset, length, &instruction))) {
                 printf("[%08llx:%04lx]  ", sregs.cs.base, ip);
                 char buffer[256];
                 ZydisFormatterFormatInstruction(&formatter, &instruction, buffer, sizeof buffer, regs.rip);
