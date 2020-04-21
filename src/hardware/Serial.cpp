@@ -31,30 +31,10 @@
 #define LOG_INFO(fmt)
 #endif
 
-namespace
-{
-    inline bool setNonBlocking(int fd)
-    {
-        int ret = fcntl(fd, F_GETFL, 0);
-        if (ret == -1) {
-            return false;
-        }
 
-        return fcntl(fd, F_SETFL, ret | O_NONBLOCK) != -1;
-    }
-} /* anonymous */
-
-Serial16450::Serial16450()
-    : mSocketName{}, mClients{}, mServerFd{-1}, mVmFd{-1}, mIrqFd{-1}, mIrqRefreshFd{-1},
-    mDLAB{false}, mScratchPad{0xff}, mInterruptEnableRegister{0}, mBaudDivisor{0}
-{
-    mEpollFd = epoll_create1(EPOLL_CLOEXEC);
-    if (mEpollFd == -1) {
-        THROW_RUNTIME_ERROR("failed to create epoll loop.");
-    }
-
-    mLoop = std::thread(std::bind(&Serial16450::eventLoop, this));
-}
+Serial16450::Serial16450(const EventLoop& eventLoop)
+    : mEventLoop(eventLoop), mSocketName{}, mClients{}, mServerFd{-1}, mVmFd{-1}, mIrqFd{-1},
+    mIrqRefreshFd{-1}, mDLAB{false}, mScratchPad{0xff}, mInterruptEnableRegister{0}, mBaudDivisor{0} {}
 
 Serial16450::Serial16450(Serial16450&& port)
 {
@@ -64,36 +44,16 @@ Serial16450::Serial16450(Serial16450&& port)
 Serial16450::~Serial16450()
 {
     stop();
-
-    // stop local loop
-    if (mEpollFd) {
-        close(mEpollFd);
-        mEpollFd = -1;
-    }
-
-    if (mLoop.joinable()) {
-        mLoop.join();
-    }
 }
 
 Serial16450& Serial16450::operator=(Serial16450&& port)
 {
     stop();
 
-    // stop local loop
-    if (mEpollFd != -1) {
-        close(mEpollFd);
-        mEpollFd = -1;
-    }
-    if (mLoop.joinable()) {
-        mLoop.join();
-    }
-
     // replace with foreign loop
-    mLoop = std::move(port.mLoop);
+    mEventLoop = std::move(port.mEventLoop);
     mClients = std::move(port.mClients);
     std::swap(mServerFd, port.mServerFd);
-    std::swap(mEpollFd, port.mEpollFd);
     std::swap(mVmFd, port.mVmFd);
     std::swap(mIrqFd, port.mIrqFd);
     std::swap(mIrqRefreshFd, port.mIrqRefreshFd);
@@ -130,16 +90,31 @@ bool Serial16450::start(const std::string& socketName, int vmFd, int gsi)
         return false;
     }
 
-    if (!setNonBlocking(mServerFd)) {
-        LOG_ERROR("unable to make unix server socket non-blocking");
-        return false;
-    }
+    bool ret = mEventLoop.addEvent(mServerFd, EPOLLIN, [this] (uint32_t events) {
+        if (events & EPOLLERR) {
+            // error
+        }
 
-    struct epoll_event event{};
-    event.data.fd = mServerFd;
-    event.events = EPOLLIN;
-    if (epoll_ctl(mEpollFd, EPOLL_CTL_ADD, mServerFd, &event) == -1) {
-        LOG_ERROR("unable to add unix server socket to loop");
+        int clientFd = accept(mServerFd, nullptr, nullptr);
+        if (clientFd == -1) {
+            LOG_ERROR("failed to accept client connection.");
+            return;
+        }
+
+        bool ret = mEventLoop.addEvent(clientFd, EPOLLIN | EPOLLET, [this, clientFd] (uint32_t events) {
+            LOG_INFO("client " << clientFd << "data ready");
+        });
+
+        if (!ret) {
+            LOG_ERROR("failed to add client connection to listen loop");
+            close(clientFd);
+            return;
+        }
+        mClients.insert(clientFd);
+    });
+
+    if (!ret) {
+        LOG_ERROR("server socket failed to listen");
     }
 
     // create interrupts
@@ -149,70 +124,18 @@ bool Serial16450::start(const std::string& socketName, int vmFd, int gsi)
 
 void Serial16450::stop() {
     for (int clientFd : mClients) {
-        if (mEpollFd) {
-            struct epoll_event event{};
-            event.data.fd = clientFd;
-            epoll_ctl(mEpollFd, EPOLL_CTL_DEL, clientFd, &event);
-        }
+        mEventLoop.removeEvent(clientFd);
         close(clientFd);
     }
     mClients.clear();
 
     if (mServerFd != -1) {
-        struct epoll_event event{};
-        event.data.fd = mServerFd;
-        epoll_ctl(mEpollFd, EPOLL_CTL_DEL, mServerFd, &event);
+        mEventLoop.removeEvent(mServerFd);
         close(mServerFd);
         mServerFd = -1;
     }
 
     // clean up interrupts
-}
-
-void Serial16450::eventLoop() {
-    std::array<struct epoll_event, 16> events{};
-
-    int count = 0;
-    while (mEpollFd != -1 && (count = epoll_wait(mEpollFd, events.data(), events.size(), -1)) != -1) {
-        for (int i = 0; i < count; i++) {
-            // file descriptor probably closed.
-            if (events[i].events & EPOLLERR) {
-                LOG_INFO("error occurred (fd=" << events[i].data.fd << ")");
-                epoll_ctl(mEpollFd, EPOLL_CTL_DEL, events[i].data.fd, &events[i]);
-                close(events[i].data.fd);
-            }
-
-            // server socket
-            else if (events[i].data.fd == mServerFd) {
-                int clientFd = accept(mServerFd, nullptr, nullptr);
-                if (clientFd == -1) {
-                    LOG_ERROR("failed to accept client connection.");
-                    continue;
-                }
-
-                setNonBlocking(clientFd);
-                epoll_event event{};
-                event.data.fd = clientFd;
-                event.events = EPOLLIN | EPOLLET;
-                if (epoll_ctl(mEpollFd, EPOLL_CTL_ADD, clientFd, &event) == -1) {
-                    LOG_ERROR("failed to add client connection to listen loop");
-                    close(clientFd);
-                    continue;
-                }
-                mClients.insert(clientFd);
-            }
-
-            // irq refresh notification - check if line is readable.
-            else if (events[i].data.fd == mIrqRefreshFd) {
-                // trigger interrupt if readable
-            }
-
-            // client
-            else {
-                // trigger interrupt
-            }
-        }
-    }
 }
 
 bool Serial16450::isReadable() {

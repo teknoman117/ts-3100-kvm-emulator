@@ -468,6 +468,8 @@ int main (int argc, char** argv) {
     }
 #endif /* NDEBUG */
 
+    EventLoop deviceEventLoop;
+
     // -------------------- DEVICES ----------------------
     //auto timer0 = std::make_shared<ProgrammableIntervalTimer>();
     //pioDeviceTable.emplace(AddressRange{0x40, 0x04}, timer0);
@@ -476,22 +478,22 @@ int main (int argc, char** argv) {
     //auto prescaler = std::make_shared<i386EXClockPrescaler>(prescalableDevices);
     //pioDeviceTable.emplace(AddressRange{0xF804, 0x02}, prescaler);
     
-    auto com1 = std::make_shared<Serial16450>();
+    auto com1 = std::make_shared<Serial16450>(deviceEventLoop);
     if (!com1->start("/tmp/3100.com1.socket", vmFd, 4)) {
         return EXIT_FAILURE;
     }
 
-    auto com2 = std::make_shared<Serial16450>();
+    auto com2 = std::make_shared<Serial16450>(deviceEventLoop);
     if (!com2->start("/tmp/3100.com2.socket", vmFd, 3)) {
         return EXIT_FAILURE;
     }
 
-    auto com3 = std::make_shared<Serial16450>();
+    auto com3 = std::make_shared<Serial16450>(deviceEventLoop);
     if (!com3->start("/tmp/3100.com3.socket", vmFd, 4)) {
         return EXIT_FAILURE;
     }
 
-    auto com4 = std::make_shared<Serial16450>();
+    auto com4 = std::make_shared<Serial16450>(deviceEventLoop);
     if (!com4->start("/tmp/3100.com4.socket", vmFd, 3)) {
         return EXIT_FAILURE;
     }

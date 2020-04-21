@@ -2,6 +2,7 @@
 #define SERIAL_HPP_
 
 #include "DevicePio.hpp"
+#include "../EventLoop.hpp"
 
 #include <string>
 #include <thread>
@@ -12,11 +13,10 @@
 
 class Serial16450 : public DevicePio
 {
+    EventLoop mEventLoop;
     std::string mSocketName;
-    std::thread mLoop;
     std::set<int> mClients;
     int mServerFd;
-    int mEpollFd;
 
     int mVmFd;
     int mIrqFd;
@@ -27,12 +27,11 @@ class Serial16450 : public DevicePio
     uint8_t mInterruptEnableRegister;
     uint16_t mBaudDivisor;
 
-    void eventLoop();
     bool isReadable();
     bool isWritable();
 
 public:
-    Serial16450();
+    Serial16450(const EventLoop& eventLoop);
     Serial16450(const Serial16450&) = delete;
     Serial16450(Serial16450&& port);
 
