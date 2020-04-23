@@ -270,7 +270,6 @@ int main (int argc, char** argv) {
     // ----------------------- MEMORY MAP CREATION ----------------------------------
     // open rom image
     int romFd = open("roms/flash.bin", O_RDONLY | O_CLOEXEC);
-    //int romFd = open("roms/flash2.bin", O_RDONLY | O_CLOEXEC);
     if (romFd == -1) {
         perror("unable to open the rom.");
         return EXIT_FAILURE;
@@ -381,19 +380,6 @@ int main (int argc, char** argv) {
         perror("KVM_CREATE_PIT2");
         return EXIT_FAILURE;
     }
-
-    /*int efd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
-    if (efd == -1) {
-        perror("eventfd");
-        return EXIT_FAILURE;
-    }
-
-    struct kvm_irqfd irqfd { .fd = (__u32) efd, .gsi = 8, .flags = 0, .resamplefd = 0 };
-    ret = ioctl(vmFd, KVM_IRQFD, &irqfd);
-    if (ret == -1) {
-        perror("KVM_IRQFD");
-        return EXIT_FAILURE;
-    }*/
 
     // create a virtual cpu for the vm
     int vcpuFd = ioctl(vmFd, KVM_CREATE_VCPU, (unsigned long) 0);

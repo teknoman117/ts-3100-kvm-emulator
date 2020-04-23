@@ -4,10 +4,11 @@
 #include "DevicePio.hpp"
 #include "../EventLoop.hpp"
 
+#include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
-#include <set>
 
 // maps a serial port to a unix socket
 
@@ -15,40 +16,55 @@ class Serial16450 : public DevicePio
 {
     EventLoop mEventLoop;
     std::string mSocketName;
-    std::set<int> mClients;
-    int mServerFd;
+    std::mutex mMutex;
+    uint32_t mGSI;
 
-    int mVmFd;
-    int mIrqFd;
-    int mIrqRefreshFd;
+    struct __descriptors {
+        std::set<int> clients;
+        int server;
+        int vm;
+        int irq;
+        int refresh;
+        __descriptors() : clients{}, server(-1), vm(-1), irq(-1), refresh(-1) {}
+    } fds;
 
-    bool mDLAB;
-    uint8_t mScratchPad;
-    uint8_t mInterruptEnableRegister;
-    uint16_t mBaudDivisor;
+    struct {
+        // direct registers
+        uint8_t receive;
+        uint16_t divisor;
+        uint8_t interruptControl;
+        uint8_t lineControl;
+        uint8_t modemControl;
+        uint8_t scratchpad;
+        // used to construct other registers
+        bool readable;
+        bool writable;
+        bool readInterruptFlag;
+        bool writeInterruptFlag;
+        bool readInterruptEnabled;
+        bool writeInterruptEnabled;
+    } registers;
 
-    bool isReadable();
-    bool isWritable();
+    void handleClientEvent(int clientFd, uint32_t events);
+    void reloadEventLoop();
+    void triggerInterrupt();
 
 public:
     Serial16450(const EventLoop& eventLoop);
     Serial16450(const Serial16450&) = delete;
-    Serial16450(Serial16450&& port);
+    Serial16450(Serial16450&& port) = delete;
 
     virtual ~Serial16450();
 
     Serial16450& operator=(const Serial16450&) = delete;
-    Serial16450& operator=(Serial16450&& port);
+    Serial16450& operator=(Serial16450&& port) = delete;
 
-    bool start(const std::string& socketName, int vmFd, int gsi);
+    bool start(const std::string& socketName, int vmFd, uint32_t gsi);
     void stop();
 
+    // DevicePio implementation
     void iowrite8(uint16_t address, uint8_t value) override;
     uint8_t ioread8(uint16_t address) override;
-
-    bool hasClients() {
-        return mClients.size() > 0;
-    }
 };
 
 #endif /* SERIAL_HPP_ */
