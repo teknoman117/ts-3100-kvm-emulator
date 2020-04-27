@@ -4,7 +4,9 @@
 #include <cinttypes>
 #include <string>
 
-struct ChipSelectUnit {
+#include "DevicePio.hpp"
+
+struct ChipSelectUnit : public DevicePio {
     // bits that the 386EX Chip Select Units can actually operate on
     static constexpr uint32_t HardwareMask = 0x03FFF800;
 
@@ -64,6 +66,12 @@ struct ChipSelectUnit {
             uint16_t maskLow)
         : addressLowRegister(addressLow), addressHighRegister(addressHigh),
           addressMaskLowRegister(maskLow), addressMaskHighRegister(maskHigh) {}
+
+    virtual ~ChipSelectUnit() = default;
+
+    // DevicePio implementation
+    void iowrite16(uint16_t address, uint16_t value) override;
+    uint16_t ioread16(uint16_t address) override;
 };
 
 #endif /* CHIPSELECTUNIT_HPP_ */

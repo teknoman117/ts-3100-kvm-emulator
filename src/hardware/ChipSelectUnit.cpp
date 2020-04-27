@@ -32,3 +32,44 @@ void ChipSelectUnit::Debug(const std::string& deviceName) const {
     }
     fprintf(stderr, " --- ----------------- --- \n\n");
 }
+
+
+void ChipSelectUnit::iowrite16(uint16_t address, uint16_t value)
+{
+    auto registerIndex = (address & 0x07) >> 1;
+    switch (registerIndex) {
+        case 0:
+            addressLowRegister = value;
+            break;
+        case 1:
+            addressHighRegister = value;
+            break;
+        case 2:
+            addressMaskLowRegister = value;
+            break;
+        case 3:
+            addressMaskHighRegister = value;
+            break;
+    }
+    Debug(std::to_string((address & 0x78) >> 3));
+}
+
+uint16_t ChipSelectUnit::ioread16(uint16_t address)
+{
+    auto registerIndex = (address & 0x07) >> 1;
+    switch (registerIndex) {
+        case 0:
+            return addressLowRegister;
+            break;
+        case 1:
+            return addressHighRegister;
+            break;
+        case 2:
+            return addressMaskLowRegister;
+            break;
+        case 3:
+            return addressMaskHighRegister;
+            break;
+    }
+    return 0xffff;
+}

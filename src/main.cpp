@@ -32,10 +32,6 @@ typedef void (*io_handler_t)(bool is_write, uint16_t addr, void* data, size_t le
 uint8_t rtcIndex = 0;
 uint8_t rtcRegisters[128];
 
-ChipSelectUnit chipSelectUnits[8] = {
-    {}, {}, {}, {}, {}, {}, {}, { 0xFFFF, 0xFF6F, 0xFFFF, 0xFFFF },
-};
-
 ProgrammableIntervalTimer timer{};
 
 void handlerRtc(bool is_write, uint16_t addr, void* data, size_t length, size_t count) {
@@ -87,44 +83,6 @@ void handlerKeyboard(bool is_write, uint16_t addr, void* data, size_t length, si
     if (!is_write) {
         *data_ = 0;
     }
-}
-
-void handlerChipSelectUnit(bool is_write, uint16_t addr, void* data, size_t length, size_t count) {
-    assert(length == 2);
-    assert(count == 1);
-    // figure out which chip select unit is being accessed
-    uint16_t unitIndex = (addr & 0x0078) >> 3;
-    uint16_t registerIndex = (addr & 0x0007) >> 1;
-    uint16_t* data_ = reinterpret_cast<uint16_t*>(data);
-
-    ChipSelectUnit& unit = chipSelectUnits[unitIndex];
-    switch (registerIndex) {
-        case 0:
-            if (is_write)
-                unit.addressLowRegister = *data_;
-            else
-                *data_ = unit.addressLowRegister;
-            break;
-        case 1:
-            if (is_write)
-                unit.addressHighRegister = *data_;
-            else
-                *data_ = unit.addressHighRegister;
-            break;
-        case 2:
-            if (is_write)
-                unit.addressMaskLowRegister = *data_;
-            else
-                *data_ = unit.addressMaskLowRegister;
-            break;
-        case 3:
-            if (is_write)
-                unit.addressMaskHighRegister = *data_;
-            else
-                *data_ = unit.addressMaskHighRegister;
-            break;
-    }
-    unit.Debug(std::to_string(unitIndex));
 }
 
 void handlerUnhandled(bool is_write, uint16_t addr, void* data, size_t length, size_t count) {
@@ -224,7 +182,6 @@ std::map<AddressRange, io_handler_t> ioHandlerTable = {
     { { 0x80,   0x01 }, handlerPOSTCode },
     { { 0x92,   0x01 }, handlerA20Gate },
     { { 0x198,  0x08 }, handlerManufacturerSpecific },
-    { { 0xF400, 0x40 }, handlerChipSelectUnit },
     { { 0xF834, 0x01 }, handlerTimerConfiguration },
     { { 0xF860, 0x01 }, handlerPort1Pin },
 };
@@ -467,29 +424,37 @@ int main (int argc, char** argv) {
     if (!com1->start("/tmp/3100.com1.socket", vmFd, 4)) {
         return EXIT_FAILURE;
     }
+    pioDeviceTable.emplace(AddressRange{0x03f8, 0x08}, com1);
 
     auto com2 = std::make_shared<Serial16450>(deviceEventLoop);
     if (!com2->start("/tmp/3100.com2.socket", vmFd, 3)) {
         return EXIT_FAILURE;
     }
+    pioDeviceTable.emplace(AddressRange{0x02f8, 0x08}, com2);
 
     auto com3 = std::make_shared<Serial16450>(deviceEventLoop);
     if (!com3->start("/tmp/3100.com3.socket", vmFd, 4)) {
         return EXIT_FAILURE;
     }
+    pioDeviceTable.emplace(AddressRange{0x03e8, 0x08}, com3);
 
     auto com4 = std::make_shared<Serial16450>(deviceEventLoop);
     if (!com4->start("/tmp/3100.com4.socket", vmFd, 3)) {
         return EXIT_FAILURE;
     }
+    pioDeviceTable.emplace(AddressRange{0x02e8, 0x08}, com4);
 
     auto hexDisplay = std::make_shared<HexDisplay>();
-
-    pioDeviceTable.emplace(AddressRange{0x03f8, 0x08}, com1);
-    pioDeviceTable.emplace(AddressRange{0x02f8, 0x08}, com2);
-    pioDeviceTable.emplace(AddressRange{0x03e8, 0x08}, com3);
-    pioDeviceTable.emplace(AddressRange{0x02e8, 0x08}, com4);
     pioDeviceTable.emplace(AddressRange{0xe000, 0x08}, hexDisplay);
+
+    std::shared_ptr<ChipSelectUnit> csus[8];
+    for (int i = 0; i < 7; i++) {
+        csus[i] = std::make_shared<ChipSelectUnit>();
+    }
+    csus[7] = std::make_shared<ChipSelectUnit>(0xFFFF, 0xFF6F, 0xFFFF, 0xFFFF);
+    for (uint16_t csusBaseAddress = 0xF400, i = 0; i < 8; csusBaseAddress += 0x08, i++) {
+        pioDeviceTable.emplace(AddressRange{csusBaseAddress, 0x08}, csus[i]);
+    }
 
 //#ifndef NDEBUG
 #if 0
