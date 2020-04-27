@@ -36,7 +36,7 @@ void ChipSelectUnit::Debug(const std::string& deviceName) const {
 
 void ChipSelectUnit::iowrite16(uint16_t address, uint16_t value)
 {
-    Register r = static_cast<Register>(address & 0xe);
+    Register r = static_cast<Register>(address & 0x7);
     switch (r) {
         case Register::AddressLowWord:
             addressLowRegister = value;
@@ -51,12 +51,14 @@ void ChipSelectUnit::iowrite16(uint16_t address, uint16_t value)
             addressMaskHighRegister = value;
             break;
     }
+#ifndef NDEBUG
     Debug(std::to_string((address & 0x78) >> 3));
+#endif
 }
 
 uint16_t ChipSelectUnit::ioread16(uint16_t address)
 {
-    Register r = static_cast<Register>(address & 0xe);
+    Register r = static_cast<Register>(address & 0x7);
     switch (r) {
         case Register::AddressLowWord:
             return addressLowRegister;

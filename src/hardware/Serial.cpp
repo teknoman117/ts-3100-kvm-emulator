@@ -276,12 +276,12 @@ void Serial16450::iowrite8(uint16_t address, uint8_t data)
                 registers.writeInterruptFlag = false;
 
                 // trigger reload timer
+                time_t delay = (1600000000ULL * registers.divisor) / 18432ULL;
                 struct itimerspec timeout {
                     .it_interval = {},
-                    .it_value = { .tv_sec = 0, .tv_nsec = 1000000UL }
+                    .it_value = { .tv_sec = 0, .tv_nsec = delay }
                 };
                 timerfd_settime(fds.writeTimer, 0, &timeout, nullptr);
-                reloadEventLoop();
             } else {
                 reinterpret_cast<uint8_t*>(&registers.divisor)[0] = data;
             }
@@ -357,12 +357,12 @@ uint8_t Serial16450::ioread8(uint16_t address)
                 registers.readInterruptFlag = false;
 
                 // trigger reload timer
+                time_t delay = (1600000000ULL * registers.divisor) / 18432ULL;
                 struct itimerspec timeout {
                     .it_interval = {},
-                    .it_value = { .tv_sec = 0, .tv_nsec = 1000000UL }
+                    .it_value = { .tv_sec = 0, .tv_nsec = delay }
                 };
                 timerfd_settime(fds.readTimer, 0, &timeout, nullptr);
-                reloadEventLoop();
                 return registers.receive;
             }
             return reinterpret_cast<uint8_t*>(&registers.divisor)[0];
@@ -378,7 +378,8 @@ uint8_t Serial16450::ioread8(uint16_t address)
             if (registers.writeInterruptEnabled && registers.writeInterruptFlag) {
                 // reading the interrupt status register clears the write interrupt condition
                 // TODO: is the 16450 uart like the AVR uart where the txready signal *always*
-                //       generates an interrupt?
+                //       generates an interrupt? or does "clearing" the condition really cause
+                //       it to stop generating the txready interrupt?
                 registers.writeInterruptFlag = false;
                 return 0x02;
             }

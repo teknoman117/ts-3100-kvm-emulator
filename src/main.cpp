@@ -32,8 +32,6 @@ typedef void (*io_handler_t)(bool is_write, uint16_t addr, void* data, size_t le
 uint8_t rtcIndex = 0;
 uint8_t rtcRegisters[128];
 
-ProgrammableIntervalTimer timer{};
-
 void handlerRtc(bool is_write, uint16_t addr, void* data, size_t length, size_t count) {
     assert(length == 1);
     assert(count == 1);
@@ -131,7 +129,7 @@ void handlerJumperRegister(bool is_write, uint16_t addr, void* data, size_t leng
 
     if (!is_write) {
         // jumper 3 & 4 installed
-        printf("REQUESTED JUMPER VALUES (PLD)\n");
+        fprintf(stderr, "REQUESTED JUMPER VALUES (PLD)\n");
         *reinterpret_cast<uint8_t*>(data) = 0x02;
     }
 }
@@ -152,9 +150,8 @@ void handlerA20Gate(bool is_write, uint16_t addr, void* data, size_t length, siz
 
     uint8_t *data_ = reinterpret_cast<uint8_t*>(data);
     if (is_write) {
-        // jumper 3 & 4 installed
         a20register = *data_;
-        //printf("LOADED FAST A20 GATE REGISTER = %02x\n", a20register);
+        fprintf(stderr, "LOADED FAST A20 GATE REGISTER = %02x\n", a20register);
     } else {
         *data_ = a20register;
     }
@@ -165,12 +162,10 @@ void handlerPort1Pin(bool is_write, uint16_t addr, void* data, size_t length, si
     assert(count == 1);
 
     if (!is_write) {
-        printf("REQUESTED JUMPER VALUES (386 PORT1)\n", a20register);
+        fprintf(stderr, "REQUESTED JUMPER VALUES (386 PORT1)\n", a20register);
         *reinterpret_cast<uint8_t*>(data) = 0x80;
     }
 }
-
-std::map<AddressRange, std::shared_ptr<DevicePio>> pioDeviceTable;
 
 std::map<AddressRange, io_handler_t> ioHandlerTable = {
     { { 0x60,   0x05 }, handlerKeyboard },
@@ -383,13 +378,7 @@ int main (int argc, char** argv) {
         return EXIT_FAILURE;
     }
 
-    struct kvm_regs regs = {
-        .rax = 2,
-        .rbx = 2,
-        .rip = 0,
-        .rflags = 0x2
-    };
-
+    struct kvm_regs regs = { .rip = 0 };
     ret = ioctl(vcpuFd, KVM_SET_REGS, &regs);
     if (ret == -1) {
         perror("KVM_GET_REGS");
@@ -412,12 +401,15 @@ int main (int argc, char** argv) {
     EventLoop deviceEventLoop;
 
     // -------------------- DEVICES ----------------------
+    std::map<AddressRange, std::shared_ptr<DevicePio>> pioDeviceTable;
+
     //auto timer0 = std::make_shared<ProgrammableIntervalTimer>();
     //pioDeviceTable.emplace(AddressRange{0x40, 0x04}, timer0);
 
-    //std::vector<std::shared_ptr<Prescalable>> prescalableDevices = { timer0 };
-    //auto prescaler = std::make_shared<i386EXClockPrescaler>(prescalableDevices);
-    //pioDeviceTable.emplace(AddressRange{0xF804, 0x02}, prescaler);
+    // virtual device: 386EX prescaler unit
+    std::vector<std::shared_ptr<Prescalable>> prescalableDevices = { };
+    auto prescaler = std::make_shared<i386EXClockPrescaler>(prescalableDevices);
+    pioDeviceTable.emplace(AddressRange{0xF804, 0x02}, prescaler);
     
     // virtual device: COM1
     auto com1 = std::make_shared<Serial16450>(deviceEventLoop);
@@ -451,7 +443,7 @@ int main (int argc, char** argv) {
     auto hexDisplay = std::make_shared<HexDisplay>();
     pioDeviceTable.emplace(AddressRange{0xe000, 0x08}, hexDisplay);
 
-    // virtual device: Chip Select Units
+    // virtual device: Chip Select Units (unit 7 "upper chip select" has special starting values)
     std::shared_ptr<ChipSelectUnit> csus[8];
     for (int i = 0; i < 7; i++) {
         csus[i] = std::make_shared<ChipSelectUnit>();
@@ -492,17 +484,17 @@ int main (int argc, char** argv) {
             ZyanUSize offset = 0;
             ZyanUSize length = 0;
             void* codeBuffer = NULL;
-            if (sregs.cs.base < 0x70000) {
+            if (sregs.cs.base < 0xA0000) {
                 codeBuffer = ram;
-                offset = (sregs.cs.base + ip) - 0x70000;
-                length = 0x70000 - offset;
+                offset = sregs.cs.base + ip;
+                length = 0xA0000 - offset;
             } else if (sregs.cs.base < 0xF0000) {
                 codeBuffer = flashMemory + 0x60000;
-                offset = ip;
+                offset = (sregs.cs.base + ip) - 0xE0000;
                 length = 0x10000 - ip;
             } else if (sregs.cs.base < 0x100000) {
                 codeBuffer = flashMemory + 0x70000;
-                offset = ip;
+                offset = (sregs.cs.base + ip) - 0xF0000;
                 length = 0x10000 - ip;
             } else {
                 codeBuffer = flashMemory;
@@ -512,18 +504,18 @@ int main (int argc, char** argv) {
 
             ZydisDecodedInstruction instruction;
             int count = 8;
-            printf("--- next instructions ---\n");
+            fprintf(stderr, "--- next instructions ---\n");
             while (count--
                     && ZYAN_SUCCESS(ZydisDecoderDecodeBuffer(&decoder, codeBuffer + offset, length, &instruction))) {
-                printf("[%08llx:%04lx]  ", sregs.cs.base, ip);
+                fprintf(stderr, "[%08llx:%04lx]  ", sregs.cs.base, ip);
                 char buffer[256];
                 ZydisFormatterFormatInstruction(&formatter, &instruction, buffer, sizeof buffer, regs.rip);
-                puts(buffer);
+                fprintf(stderr, "%s\n", buffer);
                 offset += instruction.length;
                 ip += instruction.length;
                 length -= instruction.length;
             }
-            printf("--- ----------------- ---\n");
+            fprintf(stderr, "--- ----------------- ---\n");
         } else {
             previousWasDebug = false;
         }
@@ -531,7 +523,7 @@ int main (int argc, char** argv) {
 
         switch (vcpuRun->exit_reason) {
             case KVM_EXIT_HLT:
-                puts("KVM_EXIT_HLT");
+                fprintf(stderr, "KVM_EXIT_HLT\n");
                 return EXIT_SUCCESS;
 
             case KVM_EXIT_DEBUG:
