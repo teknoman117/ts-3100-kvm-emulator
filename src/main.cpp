@@ -10,8 +10,6 @@
 #include <fcntl.h>
 #include <linux/kvm.h>
 #include <sys/ioctl.h>
-#include <sys/eventfd.h>
-#include <sys/timerfd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/mman.h>
@@ -25,6 +23,7 @@
 #include "hardware/Timer.hpp"
 #include "hardware/i386EXClockPrescaler.hpp"
 #include "hardware/Serial.hpp"
+#include "hardware/HexDisplay.hpp"
 
 #define PAGE_SIZE 4096
 
@@ -484,10 +483,13 @@ int main (int argc, char** argv) {
         return EXIT_FAILURE;
     }
 
-    pioDeviceTable.emplace(AddressRange{0x3f8, 0x08}, com1);
-    pioDeviceTable.emplace(AddressRange{0x2f8, 0x08}, com2);
-    pioDeviceTable.emplace(AddressRange{0x3e8, 0x08}, com3);
-    pioDeviceTable.emplace(AddressRange{0x2e8, 0x08}, com4);
+    auto hexDisplay = std::make_shared<HexDisplay>();
+
+    pioDeviceTable.emplace(AddressRange{0x03f8, 0x08}, com1);
+    pioDeviceTable.emplace(AddressRange{0x02f8, 0x08}, com2);
+    pioDeviceTable.emplace(AddressRange{0x03e8, 0x08}, com3);
+    pioDeviceTable.emplace(AddressRange{0x02e8, 0x08}, com4);
+    pioDeviceTable.emplace(AddressRange{0xe000, 0x08}, hexDisplay);
 
 //#ifndef NDEBUG
 #if 0
