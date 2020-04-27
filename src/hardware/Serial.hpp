@@ -18,6 +18,7 @@ class Serial16450 : public DevicePio
     std::string mSocketName;
     std::mutex mMutex;
     uint32_t mGSI;
+    int mEventFlags;
 
     struct __descriptors {
         std::set<int> clients;
@@ -25,7 +26,10 @@ class Serial16450 : public DevicePio
         int vm;
         int irq;
         int refresh;
-        __descriptors() : clients{}, server(-1), vm(-1), irq(-1), refresh(-1) {}
+        int readTimer;
+        int writeTimer;
+        __descriptors() : clients{}, server(-1), vm(-1), irq(-1), refresh(-1),
+                readTimer(-1), writeTimer(-1) {}
     } fds;
 
     struct {

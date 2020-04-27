@@ -14,6 +14,7 @@
 #include <sys/ioctl.h>
 #include <sys/fcntl.h>
 #include <sys/socket.h>
+#include <sys/timerfd.h>
 #include <sys/un.h>
 
 #define THROW_RUNTIME_ERROR(fmt) { \
@@ -36,7 +37,8 @@
 
 
 Serial16450::Serial16450(const EventLoop& eventLoop)
-    : mEventLoop(eventLoop), mSocketName{}, mMutex{}, fds{}, registers{} {}
+    : mEventLoop(eventLoop), mSocketName{}, mMutex{}, mGSI{},
+    mEventFlags{EPOLLIN | EPOLLOUT | EPOLLERR}, fds{}, registers{} {}
 
 Serial16450::~Serial16450()
 {
@@ -68,6 +70,20 @@ bool Serial16450::start(const std::string& socketName, int vmFd, uint32_t gsi)
 
     if (listen(fds.server, 1) == -1) {
         LOG_ERROR("unable to listen on unix server socket");
+        return false;
+    }
+
+    // create timer for "rx ready"
+    fds.readTimer = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
+    if (fds.readTimer == -1) {
+        LOG_ERROR("unable to create timer descriptor");
+        return false;
+    }
+
+    // create timer for "tx ready"
+    fds.writeTimer = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
+    if (fds.writeTimer == -1) {
+        LOG_ERROR("unable to create timer descriptor");
         return false;
     }
 
@@ -113,11 +129,12 @@ bool Serial16450::start(const std::string& socketName, int vmFd, uint32_t gsi)
         // add client to event loop with all events disabled. interrupt enable register handles
         // what events we listen for
         std::unique_lock<std::mutex> lock(mMutex);
-        mEventLoop.addEvent(fd, EPOLLIN | EPOLLOUT | EPOLLERR,
+        mEventLoop.addEvent(fd, mEventFlags,
                 std::bind(&Serial16450::handleClientEvent, this, fd, std::placeholders::_1));
         fds.clients.insert(fd);
     });
 
+#if 0
     // whenever the refresh event occurs, retrigger the interrupt if needed
     mEventLoop.addEvent(fds.refresh, EPOLLIN, [this] (uint32_t events) {
         if (events & EPOLLERR) {
@@ -125,6 +142,7 @@ bool Serial16450::start(const std::string& socketName, int vmFd, uint32_t gsi)
             return;
         }
 
+        std::unique_lock<std::mutex> lock(mMutex);
         uint64_t data = 0;
         read(fds.refresh, &data, sizeof data);
         if ((registers.readInterruptEnabled && registers.readInterruptFlag)
@@ -133,6 +151,35 @@ bool Serial16450::start(const std::string& socketName, int vmFd, uint32_t gsi)
             triggerInterrupt();
         }
     });
+#endif
+
+    // whenever the timeout occurs for the read timer, re-enable the read interrupts
+    mEventLoop.addEvent(fds.readTimer, EPOLLIN, [this] (uint32_t events) {
+        if (events & EPOLLERR) {
+            LOG_ERROR("error occurred with timer event");
+            return;
+        }
+
+        uint64_t data = 0;
+        read(fds.readTimer, &data, sizeof data);
+        std::unique_lock<std::mutex> lock(mMutex);
+        mEventFlags |= EPOLLIN;
+        reloadEventLoop();
+    });
+
+    // whenever the timeout occurs for the send timer, re-enable the write interrupts
+    mEventLoop.addEvent(fds.writeTimer, EPOLLIN, [this] (uint32_t events) {
+        if (events & EPOLLERR) {
+            LOG_ERROR("error occurred with timer event");
+            return;
+        }
+
+        uint64_t data = 0;
+        read(fds.writeTimer, &data, sizeof data);
+        std::unique_lock<std::mutex> lock(mMutex);
+        mEventFlags |= EPOLLOUT;
+        reloadEventLoop();
+    });
 
     return true;
 }
@@ -140,9 +187,9 @@ bool Serial16450::start(const std::string& socketName, int vmFd, uint32_t gsi)
 void Serial16450::stop() {
     std::unique_lock<std::mutex> lock(mMutex);
 
-    for (int clientFd : fds.clients) {
-        mEventLoop.removeEvent(clientFd);
-        close(clientFd);
+    for (int fd : fds.clients) {
+        mEventLoop.removeEvent(fd);
+        close(fd);
     }
     fds.clients.clear();
 
@@ -157,10 +204,15 @@ void Serial16450::stop() {
             .fd = (__u32) fds.irq,
             .gsi = mGSI,
             .flags = KVM_IRQFD_FLAG_DEASSIGN,
-            .resamplefd = 0
+            .resamplefd = (__u32) fds.refresh
         };
         ioctl(fds.vm, KVM_IRQFD, &irqfd);
+        close(fds.irq);
+        close(fds.refresh);
     }
+
+    close(fds.readTimer);
+    close(fds.writeTimer);
 }
 
 void Serial16450::handleClientEvent(int fd, uint32_t events)
@@ -169,6 +221,7 @@ void Serial16450::handleClientEvent(int fd, uint32_t events)
     if (events & EPOLLIN) { 
         registers.readable = true;
         registers.readInterruptFlag = true;
+        mEventFlags &= ~EPOLLIN;
         if (registers.readInterruptEnabled) {
             // can't fire a new interrupt unless there aren't any pending
             if (!registers.writeInterruptEnabled || !registers.writeInterruptFlag) {
@@ -180,6 +233,7 @@ void Serial16450::handleClientEvent(int fd, uint32_t events)
     if (events & EPOLLOUT) {
         registers.writable = true;
         registers.writeInterruptFlag = true;
+        mEventFlags &= ~EPOLLOUT;
         if (registers.writeInterruptEnabled) {
             // can't fire a new interrupt unless there aren't any pending
             if (!registers.readInterruptEnabled || !registers.readInterruptFlag) {
@@ -190,15 +244,13 @@ void Serial16450::handleClientEvent(int fd, uint32_t events)
     }
 
     // update our listen status
-    mEventLoop.modifyEvent(fd, (registers.readInterruptFlag ? 0 : EPOLLIN)
-            | (registers.writeInterruptFlag ? 0 : EPOLLOUT) | EPOLLERR);
+    mEventLoop.modifyEvent(fd, mEventFlags);
 }
 
 void Serial16450::reloadEventLoop()
 {
     for (int fd : fds.clients) {
-        mEventLoop.modifyEvent(fd, (registers.readInterruptFlag ? 0 : EPOLLIN)
-                | (registers.writeInterruptFlag ? 0 : EPOLLOUT) | EPOLLERR);
+        mEventLoop.modifyEvent(fd, mEventFlags);
     }
 }
 
@@ -216,13 +268,19 @@ void Serial16450::iowrite8(uint16_t address, uint8_t data)
     switch (address & 0x7) {
         case 0:
             if (!(registers.lineControl & 0x80) /* DLAB bit */) {
-                for (int clientFd : fds.clients) {
-                    write(clientFd, &data, 1);
+                for (int fd : fds.clients) {
+                    write(fd, &data, 1);
                 }
                 registers.writable = false;
                 registers.writeInterruptFlag = false;
+
+                // trigger reload timer
+                struct itimerspec timeout {
+                    .it_interval = {},
+                    .it_value = { .tv_sec = 0, .tv_nsec = 1000000UL }
+                };
+                timerfd_settime(fds.writeTimer, 0, &timeout, nullptr);
                 reloadEventLoop();
-                LOG_INFO("byte was written, rearming...");
             } else {
                 reinterpret_cast<uint8_t*>(&registers.divisor)[0] = data;
             }
@@ -234,7 +292,15 @@ void Serial16450::iowrite8(uint16_t address, uint8_t data)
                 registers.interruptControl = data & 0x0f;
                 registers.readInterruptEnabled = !!(registers.interruptControl & 0x01);
                 registers.writeInterruptEnabled = !!(registers.interruptControl & 0x02);
-                //LOG_INFO("interrupt control: read: " << registers.readInterruptEnabled << ", write: " << registers.writeInterruptEnabled);
+                LOG_INFO("interrupt control: read: " << registers.readInterruptEnabled << ", write: " << registers.writeInterruptEnabled);
+
+                // if a particular interrupt was re-enabled, set the flag if the condition is met
+                if (registers.readInterruptEnabled) {
+                    registers.readInterruptFlag = registers.readable;
+                }
+                if (registers.writeInterruptEnabled) {
+                    registers.writeInterruptFlag = registers.writable;
+                }
 
                 // trigger interrupt is a new interrupt condition has occurred and we weren't in
                 // an interrupt cycle previously
@@ -284,12 +350,17 @@ uint8_t Serial16450::ioread8(uint16_t address)
                     if (n == 1) {
                         break;
                     }
-                    // TODO: check error condition
                 }
                 registers.readable = false;
                 registers.readInterruptFlag = false;
+
+                // trigger reload timer
+                struct itimerspec timeout {
+                    .it_interval = {},
+                    .it_value = { .tv_sec = 0, .tv_nsec = 1000000UL }
+                };
+                timerfd_settime(fds.readTimer, 0, &timeout, nullptr);
                 reloadEventLoop();
-                LOG_INFO("byte was read, rearming...");
                 return registers.receive;
             }
             return reinterpret_cast<uint8_t*>(&registers.divisor)[0];
@@ -304,9 +375,9 @@ uint8_t Serial16450::ioread8(uint16_t address)
             }
             if (registers.writeInterruptEnabled && registers.writeInterruptFlag) {
                 // reading the interrupt status register clears the write interrupt condition
+                // TODO: is the 16450 uart like the AVR uart where the txready signal *always*
+                //       generates an interrupt?
                 registers.writeInterruptFlag = false;
-                reloadEventLoop();
-                LOG_INFO("status was read during write interrupt, clearing write flag...");
                 return 0x02;
             }
             // no interrupt

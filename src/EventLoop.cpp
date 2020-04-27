@@ -110,16 +110,13 @@ bool EventLoop::addEvent(int fd, uint32_t events, EventLoop::HandlerType handler
         return false;
     }
 
-    // TODO: something reasonable when we try to add a duplicate descriptor (overwrite the old?)
     if (mHandlers.find(fd) != mHandlers.end()) {
-        return false;
+        removeEvent(fd);
     }
 
-    auto it = mHandlers.insert({fd, handler});
-    struct epoll_event event{};
-    event.events = events;
-    event.data.ptr = &it.first->second;
     setNonBlocking(fd);
+    auto it = mHandlers.insert({fd, handler});
+    struct epoll_event event { .events = events, .data = { .ptr = &it.first->second } };
     return epoll_ctl(mState->mEpollFd, EPOLL_CTL_ADD, fd, &event) != -1;
 }
 
@@ -130,9 +127,7 @@ bool EventLoop::modifyEvent(int fd, uint32_t events) {
         return false;
     }
 
-    struct epoll_event event{};
-    event.events = events;
-    event.data.ptr = &it->second;
+    struct epoll_event event { .events = events, .data = { .ptr = &it->second } };
     return epoll_ctl(mState->mEpollFd, EPOLL_CTL_MOD, fd, &event) != -1;
 }
 
