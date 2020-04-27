@@ -265,8 +265,9 @@ void Serial16450::iowrite8(uint16_t address, uint8_t data)
     std::unique_lock<std::mutex> lock(mMutex);
 
     // 16450 uart occupies 8 bytes of address space
-    switch (address & 0x7) {
-        case 0:
+    Register r = static_cast<Register>(address & 0x7);
+    switch (r) {
+        case Register::Data_DivisorLowByte:
             if (!(registers.lineControl & 0x80) /* DLAB bit */) {
                 for (int fd : fds.clients) {
                     write(fd, &data, 1);
@@ -285,7 +286,7 @@ void Serial16450::iowrite8(uint16_t address, uint8_t data)
                 reinterpret_cast<uint8_t*>(&registers.divisor)[0] = data;
             }
             break;
-        case 1:
+        case Register::InterruptControl_DivisorHighByte:
             if (!(registers.lineControl & 0x80) /* DLAB bit */) {
                 bool pReadInterruptEnabled = registers.readInterruptEnabled;
                 bool pWriteInterruptEnabled = registers.writeInterruptEnabled;
@@ -316,22 +317,22 @@ void Serial16450::iowrite8(uint16_t address, uint8_t data)
                 reinterpret_cast<uint8_t*>(&registers.divisor)[1] = data;
             }
             break;
-        case 2:
+        case Register::InterruptStatus_FifoControl:
             // fifo register isn't implemented in 16450
             break;
-        case 3:
+        case Register::LineControl:
             registers.lineControl = data;
             break;
-        case 4:
+        case Register::ModemControl:
             registers.modemControl = data & 0x1F;
             break;
-        case 5:
+        case Register::LineStatus:
             // line status register isn't writable
             break;
-        case 6:
+        case Register::ModemStatus:
             // modem status register isn't writable
             break;
-        case 7:
+        case Register::Scratchpad:
             registers.scratchpad = data;
             break;
     }
@@ -342,8 +343,9 @@ uint8_t Serial16450::ioread8(uint16_t address)
     std::unique_lock<std::mutex> lock(mMutex);
 
     // 16450 uart occupies 8 bytes of address space
-    switch (address & 0x07) {
-        case 0:
+    Register r = static_cast<Register>(address & 0x7);
+    switch (r) {
+        case Register::Data_DivisorLowByte:
             if (!(registers.lineControl & 0x80) /* DLAB bit */) {
                 for (int fd : fds.clients) {
                     int n = read(fd, &registers.receive, 1);
@@ -364,12 +366,12 @@ uint8_t Serial16450::ioread8(uint16_t address)
                 return registers.receive;
             }
             return reinterpret_cast<uint8_t*>(&registers.divisor)[0];
-        case 1:
+        case Register::InterruptControl_DivisorHighByte:
             if (!(registers.lineControl & 0x80) /* DLAB bit */) {
                 return registers.interruptControl;
             }
             return reinterpret_cast<uint8_t*>(&registers.divisor)[1];
-        case 2:
+        case Register::InterruptStatus_FifoControl:
             if (registers.readInterruptEnabled && registers.readInterruptFlag) {
                 return 0x04;
             }
@@ -382,17 +384,16 @@ uint8_t Serial16450::ioread8(uint16_t address)
             }
             // no interrupt
             return 0x01;
-        case 3:
+        case Register::LineControl:
             return registers.lineControl;
-        case 4:
+        case Register::ModemControl:
             return registers.modemControl;
-        case 5:
-            // determine line status
+        case Register::LineStatus:
             return (registers.writable ? 0x60 : 0x00) | (registers.readable ? 0x01 : 0x00);
-        case 6:
+        case Register::ModemStatus:
             // modem status register: we don't implement modem controls
             return 0;
-        case 7:
+        case Register::Scratchpad:
             return registers.scratchpad;
     }
     return 0xff;

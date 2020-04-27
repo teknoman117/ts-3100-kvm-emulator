@@ -396,8 +396,7 @@ int main (int argc, char** argv) {
         return EXIT_FAILURE;
     }
 
-//#ifndef NDEBUG
-#if 0
+#ifdef DISASSEMBLE
     // enable single stepping
     struct kvm_guest_debug debug = {
         .control = KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_SINGLESTEP
@@ -420,33 +419,39 @@ int main (int argc, char** argv) {
     //auto prescaler = std::make_shared<i386EXClockPrescaler>(prescalableDevices);
     //pioDeviceTable.emplace(AddressRange{0xF804, 0x02}, prescaler);
     
+    // virtual device: COM1
     auto com1 = std::make_shared<Serial16450>(deviceEventLoop);
     if (!com1->start("/tmp/3100.com1.socket", vmFd, 4)) {
         return EXIT_FAILURE;
     }
     pioDeviceTable.emplace(AddressRange{0x03f8, 0x08}, com1);
 
+    // virtual device: COM2
     auto com2 = std::make_shared<Serial16450>(deviceEventLoop);
     if (!com2->start("/tmp/3100.com2.socket", vmFd, 3)) {
         return EXIT_FAILURE;
     }
     pioDeviceTable.emplace(AddressRange{0x02f8, 0x08}, com2);
 
+    // virtual device: COM3
     auto com3 = std::make_shared<Serial16450>(deviceEventLoop);
     if (!com3->start("/tmp/3100.com3.socket", vmFd, 4)) {
         return EXIT_FAILURE;
     }
     pioDeviceTable.emplace(AddressRange{0x03e8, 0x08}, com3);
 
+    // virtual device: COM4
     auto com4 = std::make_shared<Serial16450>(deviceEventLoop);
     if (!com4->start("/tmp/3100.com4.socket", vmFd, 3)) {
         return EXIT_FAILURE;
     }
     pioDeviceTable.emplace(AddressRange{0x02e8, 0x08}, com4);
 
+    // virtual device: Hex Display
     auto hexDisplay = std::make_shared<HexDisplay>();
     pioDeviceTable.emplace(AddressRange{0xe000, 0x08}, hexDisplay);
 
+    // virtual device: Chip Select Units
     std::shared_ptr<ChipSelectUnit> csus[8];
     for (int i = 0; i < 7; i++) {
         csus[i] = std::make_shared<ChipSelectUnit>();
@@ -456,8 +461,7 @@ int main (int argc, char** argv) {
         pioDeviceTable.emplace(AddressRange{csusBaseAddress, 0x08}, csus[i]);
     }
 
-//#ifndef NDEBUG
-#if 0
+#ifdef DISASSEMBLE
     // setup a disassembly library
     ZydisDecoder decoder;
     ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_REAL_16, ZYDIS_ADDRESS_WIDTH_16);
@@ -475,8 +479,7 @@ int main (int argc, char** argv) {
             return EXIT_FAILURE;
         }
 
-//#ifndef NDEBUG
-#if 0
+#ifdef DISASSEMBLE
         // get the register state
         memset(&regs, 0, sizeof regs);
         memset(&sregs, 0, sizeof sregs);
@@ -508,7 +511,7 @@ int main (int argc, char** argv) {
             }
 
             ZydisDecodedInstruction instruction;
-            int count = 1;
+            int count = 8;
             printf("--- next instructions ---\n");
             while (count--
                     && ZYAN_SUCCESS(ZydisDecoderDecodeBuffer(&decoder, codeBuffer + offset, length, &instruction))) {

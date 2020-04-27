@@ -36,18 +36,18 @@ void ChipSelectUnit::Debug(const std::string& deviceName) const {
 
 void ChipSelectUnit::iowrite16(uint16_t address, uint16_t value)
 {
-    auto registerIndex = (address & 0x07) >> 1;
-    switch (registerIndex) {
-        case 0:
+    Register r = static_cast<Register>(address & 0xe);
+    switch (r) {
+        case Register::AddressLowWord:
             addressLowRegister = value;
             break;
-        case 1:
+        case Register::AddressHighWord:
             addressHighRegister = value;
             break;
-        case 2:
+        case Register::AddressMaskLowWord:
             addressMaskLowRegister = value;
             break;
-        case 3:
+        case Register::AddressMaskHighWord:
             addressMaskHighRegister = value;
             break;
     }
@@ -56,18 +56,18 @@ void ChipSelectUnit::iowrite16(uint16_t address, uint16_t value)
 
 uint16_t ChipSelectUnit::ioread16(uint16_t address)
 {
-    auto registerIndex = (address & 0x07) >> 1;
-    switch (registerIndex) {
-        case 0:
+    Register r = static_cast<Register>(address & 0xe);
+    switch (r) {
+        case Register::AddressLowWord:
             return addressLowRegister;
             break;
-        case 1:
+        case Register::AddressHighWord:
             return addressHighRegister;
             break;
-        case 2:
+        case Register::AddressMaskLowWord:
             return addressMaskLowRegister;
             break;
-        case 3:
+        case Register::AddressMaskHighWord:
             return addressMaskHighRegister;
             break;
     }

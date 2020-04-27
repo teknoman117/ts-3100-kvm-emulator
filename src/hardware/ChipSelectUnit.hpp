@@ -10,6 +10,13 @@ struct ChipSelectUnit : public DevicePio {
     // bits that the 386EX Chip Select Units can actually operate on
     static constexpr uint32_t HardwareMask = 0x03FFF800;
 
+    enum class Register : uint16_t {
+        AddressLowWord = 0,
+        AddressHighWord = 2,
+        AddressMaskLowWord = 4,
+        AddressMaskHighWord = 6
+    };
+
     enum class CycleType : bool {
         Memory = true,
         IO = false

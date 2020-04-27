@@ -14,6 +14,17 @@
 
 class Serial16450 : public DevicePio
 {
+    enum class Register : uint16_t {
+        Data_DivisorLowByte = 0,
+        InterruptControl_DivisorHighByte = 1,
+        InterruptStatus_FifoControl = 2,
+        LineControl = 3,
+        ModemControl = 4,
+        LineStatus = 5,
+        ModemStatus = 6,
+        Scratchpad = 7
+    };
+
     EventLoop mEventLoop;
     std::string mSocketName;
     std::mutex mMutex;
