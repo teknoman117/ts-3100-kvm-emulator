@@ -3,7 +3,7 @@ KVM Emulator for the Technologic Systems TS-3100
 
 Disclaimer: I have absolutely no connection with this company, this project is purely as a hobby project.
 
-The TS-3100 is an (at the time) low cost single board computer from late 2001 made by Technologic Systems (https://embeddedarm.com/).
+The TS-3100 is an (at the time) low cost single board computer from late 2001 made by Technologic Systems (https://www.embeddedarm.com/).
 
 Usage
 -----
