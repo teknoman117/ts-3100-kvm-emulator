@@ -74,3 +74,5 @@ Resources
 - Technologic Systems x86 SBC Resources: http://ftp.embeddedarm.com/ftp/ts-x86-sbc/
 - Intel 386EX Manual: http://bitsavers.trailing-edge.com/components/intel/80386/272485-001_80386EX_Users_Manual_Feb95.pdf
 - Intel 386 Programmers' Manual: https://css.csail.mit.edu/6.858/2014/readings/i386.pdf
+- KVM API: https://www.kernel.org/doc/Documentation/virtual/kvm/api.txt
+- Using the KVM API: https://lwn.net/Articles/658511/
