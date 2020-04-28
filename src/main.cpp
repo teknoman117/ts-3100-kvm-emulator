@@ -1,22 +1,16 @@
-#include <cstdio>
+#include <cassert>
 #include <cinttypes>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <map>
 #include <memory>
-#include <thread>
 
-#include <unistd.h>
 #include <fcntl.h>
+#include <unistd.h>
 #include <linux/kvm.h>
 #include <sys/ioctl.h>
-#include <sys/stat.h>
-#include <sys/types.h>
 #include <sys/mman.h>
-#include <sys/socket.h>
-#include <sys/un.h>
-
-#include <Zydis/Zydis.h>
 
 #include "AddressRange.hpp"
 #include "hardware/ChipSelectUnit.hpp"
@@ -24,6 +18,11 @@
 #include "hardware/i386EXClockPrescaler.hpp"
 #include "hardware/Serial.hpp"
 #include "hardware/HexDisplay.hpp"
+
+//#define DISASSEMBLE
+#ifdef DISASSEMBLE
+#include <Zydis/Zydis.h>
+#endif
 
 #define PAGE_SIZE 4096
 
