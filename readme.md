@@ -9,7 +9,7 @@ Usage
 -----
 <pre>
 # Fetch and build emulator
-git clone https://github.com/teknoman117/ts31000-kvm-emulator
+git clone --recurse-submodules https://github.com/teknoman117/ts31000-kvm-emulator
 cd ts3100-kvm-emulator
 mkdir build
 cmake -DCMAKE_BUILD_TYPE=Release -B build .
