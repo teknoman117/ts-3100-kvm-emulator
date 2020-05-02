@@ -8,5 +8,6 @@ add_executable(kvm-emulator
     hardware/Timer.cpp
     hardware/Serial.cpp
     hardware/HexDisplay.cpp
+    hardware/DS12887.cpp
 )
 target_link_libraries(kvm-emulator PRIVATE Zydis)

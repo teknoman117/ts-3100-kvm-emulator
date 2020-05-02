@@ -18,6 +18,7 @@
 #include "hardware/i386EXClockPrescaler.hpp"
 #include "hardware/Serial.hpp"
 #include "hardware/HexDisplay.hpp"
+#include "hardware/DS12887.hpp"
 
 //#define DISASSEMBLE
 #ifdef DISASSEMBLE
@@ -27,31 +28,6 @@
 #define PAGE_SIZE 4096
 
 typedef void (*io_handler_t)(bool is_write, uint16_t addr, void* data, size_t length, size_t count);
-
-uint8_t rtcIndex = 0;
-uint8_t rtcRegisters[128];
-
-void handlerRtc(bool is_write, uint16_t addr, void* data, size_t length, size_t count) {
-    assert(length == 1);
-    assert(count == 1);
-
-    uint8_t* data_ = reinterpret_cast<uint8_t*>(data);
-    if (addr & 0x0001) {
-        if (is_write) {
-            rtcRegisters[rtcIndex] = *data_;
-        } else {
-            *data_ = rtcRegisters[rtcIndex];
-        }
-    } else {
-        if (is_write) {
-            rtcIndex = *data_ & 0x7f;
-            // TODO: something with NMI signal;
-        } else {
-            fprintf(stderr, "WARN: read from the index register.\n");
-        }
-    }
-    // really need to do something about actually measuring time here
-}
 
 // see page 5-12 (pg. 85) of 386EX manual
 void handlerTimerConfiguration(bool is_write, uint16_t addr, void* data, size_t length, size_t count) {
@@ -168,7 +144,6 @@ void handlerPort1Pin(bool is_write, uint16_t addr, void* data, size_t length, si
 
 std::map<AddressRange, io_handler_t> ioHandlerTable = {
     { { 0x60,   0x05 }, handlerKeyboard },
-    { { 0x70,   0x02 }, handlerRtc },
     { { 0x72,   0x02 }, handlerLCD },
     { { 0x74,   0x01 }, handlerProductCode },
     { { 0x75,   0x01 }, handlerOptionCode },
@@ -451,6 +426,10 @@ int main (int argc, char** argv) {
     for (uint16_t csusBaseAddress = 0xF400, i = 0; i < 8; csusBaseAddress += 0x08, i++) {
         pioDeviceTable.emplace(AddressRange{csusBaseAddress, 0x08}, csus[i]);
     }
+
+    // virtual device: RTC
+    auto rtc = std::make_shared<DS12887>();
+    pioDeviceTable.emplace(AddressRange{0x70, 0x02}, rtc);
 
 #ifdef DISASSEMBLE
     // setup a disassembly library
