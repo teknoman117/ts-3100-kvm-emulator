@@ -7,6 +7,7 @@
 #include <memory>
 
 #include <fcntl.h>
+#include <signal.h>
 #include <unistd.h>
 #include <linux/kvm.h>
 #include <sys/ioctl.h>
@@ -28,6 +29,13 @@
 #define PAGE_SIZE 4096
 
 typedef void (*io_handler_t)(bool is_write, uint16_t addr, void* data, size_t length, size_t count);
+
+sig_atomic_t requestExit = 0;
+
+void sigintHandler(int signo)
+{
+    requestExit = 1;
+}
 
 // see page 5-12 (pg. 85) of 386EX manual
 void handlerTimerConfiguration(bool is_write, uint16_t addr, void* data, size_t length, size_t count) {
@@ -439,14 +447,20 @@ int main (int argc, char** argv) {
     ZydisFormatterInit(&formatter, ZYDIS_FORMATTER_STYLE_INTEL);
 #endif /* NDEBUG */
 
+    // signals
+    signal(SIGINT, sigintHandler);
+
     // run until halt instruction is found
     bool previousWasDebug = false;
     uint8_t lastA20Register = a20register;
-    while (1) {
+    while (!requestExit) {
         ret = ioctl(vcpuFd, KVM_RUN, NULL);
         if (ret == -1) {
-            perror("KVM_RUN");
-            return EXIT_FAILURE;
+            if (errno == EINTR) {
+                continue;
+            } else {
+                break;
+            }
         }
 
 #ifdef DISASSEMBLE
@@ -501,8 +515,8 @@ int main (int argc, char** argv) {
 
         switch (vcpuRun->exit_reason) {
             case KVM_EXIT_HLT:
-                fprintf(stderr, "KVM_EXIT_HLT\n");
-                return EXIT_SUCCESS;
+                requestExit = 1;
+                break;
 
             case KVM_EXIT_DEBUG:
                 previousWasDebug = true;

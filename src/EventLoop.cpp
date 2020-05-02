@@ -4,6 +4,7 @@
 #include <array>
 
 #include <unistd.h>
+#include <sys/eventfd.h>
 #include <sys/fcntl.h>
 
 namespace
@@ -22,12 +23,31 @@ namespace
 // internal event loop event-invoker
 struct EventLoopInternal {
     std::thread mLoop;
+    EventLoop::HandlerType mInterruptHandler;
     int mEpollFd;
+    int mInterruptFd;
 
     EventLoopInternal() {
         mEpollFd = epoll_create1(0);
         if (mEpollFd == -1) {
             throw std::runtime_error("failed to create epoll file descriptor");
+        }
+
+        mInterruptFd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+        if (mInterruptFd == -1) {
+            throw std::runtime_error("failed to create eventfd");
+        }
+
+        mInterruptHandler = [this] (uint32_t events) {
+            close(mEpollFd);
+            close(mInterruptFd);
+            mEpollFd = -1;
+            mInterruptFd = -1;
+        };
+
+        struct epoll_event event { .events = EPOLLIN, .data = { .ptr = &mInterruptHandler } };
+        if (epoll_ctl(mEpollFd, EPOLL_CTL_ADD, mInterruptFd, &event) == -1) {
+            throw std::runtime_error("failed to add loop interrupt handler");
         }
 
         mLoop = std::thread([this] () {
@@ -44,11 +64,9 @@ struct EventLoopInternal {
     }
     
     ~EventLoopInternal() {
-        if (mEpollFd != -1) {
-            close(mEpollFd);
-            mEpollFd = -1;
-        }
         if (mLoop.joinable()) {
+            uint64_t data = 1;
+            write(mInterruptFd, &data, sizeof data);
             mLoop.join();
         }
     }
