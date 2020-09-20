@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <stdexcept>
 
 #include <unistd.h>
 #include <sys/eventfd.h>
