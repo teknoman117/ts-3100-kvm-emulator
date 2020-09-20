@@ -23,6 +23,7 @@ void ChipSelectUnit::Debug(const std::string& deviceName) const {
     fprintf(stderr, " maskRegister:      %08x\n", maskRegister);
     fprintf(stderr, " matches memory:    %s\n", cycleType == CycleType::Memory ? "yes" : "no");
     fprintf(stderr, " enabled:           %s\n", enable ? "yes" : "no");
+    fprintf(stderr, " wait states:       %u\n", waitStates);
     if (cycleType == CycleType::Memory) {
         fprintf(stderr, " address component: %08x\n", addressRegister & HardwareMask);
         fprintf(stderr, " mask component:    %08x\n", ~maskRegister & HardwareMask);
