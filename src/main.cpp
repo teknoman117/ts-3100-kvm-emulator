@@ -21,7 +21,10 @@
 #include "hardware/HexDisplay.hpp"
 #include "hardware/DS12887.hpp"
 
-//#define DISASSEMBLE
+//#define HIGH_MEMORY_SIZE (0x100000)
+#define HIGH_MEMORY_SIZE (0)
+#define LOW_MEMORY_SIZE (0x70000)
+
 #ifdef DISASSEMBLE
 #include <Zydis/Zydis.h>
 #endif
@@ -125,7 +128,8 @@ void handlerManufacturerSpecific(bool is_write, uint16_t addr, void* data, size_
     }
 }
 
-static uint8_t a20register = 0;
+// default register state on 386EX is enabled
+static uint8_t a20register = 2;
 
 void handlerA20Gate(bool is_write, uint16_t addr, void* data, size_t length, size_t count) {
     assert(length == 1);
@@ -134,7 +138,9 @@ void handlerA20Gate(bool is_write, uint16_t addr, void* data, size_t length, siz
     uint8_t *data_ = reinterpret_cast<uint8_t*>(data);
     if (is_write) {
         a20register = *data_;
+#if !(defined NDEBUG)
         fprintf(stderr, "LOADED FAST A20 GATE REGISTER = %02x\n", a20register);
+#endif
     } else {
         *data_ = a20register;
     }
@@ -150,6 +156,58 @@ void handlerPort1Pin(bool is_write, uint16_t addr, void* data, size_t length, si
     }
 }
 
+void handlerPort3Pin(bool is_write, uint16_t addr, void* data, size_t length, size_t count) {
+    assert(length == 1);
+    assert(count == 1);
+
+    if (!is_write) {
+        fprintf(stderr, "REQUESTED JUMPER VALUES (386 PORT3)\n", a20register);
+        *reinterpret_cast<uint8_t*>(data) = 0x04;
+    }
+}
+
+enum class FlashState {
+    Read,
+    CommandByte_1,
+    CommandByte_2,
+    CommandByte_3,
+    CommandByte_4,
+    CommandByte_5,
+    Program,
+    ProductIdentification,
+    SectorErase,
+};
+
+FlashState flashState = FlashState::Read;
+
+#if (defined VIRTUAL_DISK)
+// geometry for a (512 byte/sector * 63 sectors/track * 255 heads (track/cylinder) * 8 cylinders)
+//   = 64260 KiB disk
+//constexpr uint8_t numberDiskHeads = 255;
+//constexpr uint8_t numberDiskSectors = 63;
+//constexpr uint8_t numberDiskCylinders = 8;
+uint32_t selectedDiskLBA = 0;
+bool updateDiskMapping = false;
+
+void handlerDiskRegisters(bool is_write, uint16_t addr, void* data, size_t length, size_t count) {
+    assert(count == 1);
+
+    if (is_write) {
+        if ((addr & 0x07) < 4) {
+            // write is to the (4K) LBA register
+            memcpy((void*) (reinterpret_cast<uint8_t*>(&selectedDiskLBA) + (addr & 0x03)), data,
+                    length);
+        } else {
+            // write is to the update mapping register
+            updateDiskMapping = true;
+        }
+    } else {
+        memcpy(data, (void*) (reinterpret_cast<uint8_t*>(&selectedDiskLBA) + (addr & 0x03)),
+                length);
+    }
+}
+#endif
+
 std::map<AddressRange, io_handler_t> ioHandlerTable = {
     { { 0x60,   0x05 }, handlerKeyboard },
     { { 0x72,   0x02 }, handlerLCD },
@@ -159,8 +217,12 @@ std::map<AddressRange, io_handler_t> ioHandlerTable = {
     { { 0x80,   0x01 }, handlerPOSTCode },
     { { 0x92,   0x01 }, handlerA20Gate },
     { { 0x198,  0x08 }, handlerManufacturerSpecific },
+#if (defined VIRTUAL_DISK)
+    { { 0xD000, 0x08 }, handlerDiskRegisters },
+#endif
     { { 0xF834, 0x01 }, handlerTimerConfiguration },
     { { 0xF860, 0x01 }, handlerPort1Pin },
+    { { 0xF870, 0x01 }, handlerPort3Pin },
 };
 
 int main (int argc, char** argv) {
@@ -202,7 +264,7 @@ int main (int argc, char** argv) {
 
     // ----------------------- MEMORY MAP CREATION ----------------------------------
     // open rom image
-    int romFd = open("roms/flash.bin", O_RDONLY | O_CLOEXEC);
+    int romFd = open("roms/flash.bin", O_RDWR | O_CLOEXEC);
     if (romFd == -1) {
         perror("unable to open the rom.");
         return EXIT_FAILURE;
@@ -210,20 +272,56 @@ int main (int argc, char** argv) {
 
     // mmap memory to back the flash chip
     uint8_t* flashMemory = (uint8_t*)
-            mmap(NULL, 0x80000, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1 , 0);
+            mmap(NULL, 0x80000, PROT_READ | PROT_WRITE, MAP_SHARED, romFd, 0);
     if (flashMemory == (uint8_t*) -1) {
         perror("Unable to mmap an anonymous page.");
         return EXIT_FAILURE;
     }
-    if (read(romFd, flashMemory, 0x80000) != 0x80000) {
-        fprintf(stderr, "failed to read 512 KiB from ROM file.\n");
-        return 0;
-    }
     close(romFd);
 
+#if (defined VIRTUAL_DISK)
+    // open disk option rom
+    int optionFd = open("roms/virtual-disk/option.rom", O_RDONLY | O_CLOEXEC);
+    if (optionFd == -1) {
+        perror("unable to open option rom.");
+        return EXIT_FAILURE;
+    }
+
+    // TODO: currently I'm actually using this region for variables inside the option
+    //       rom. need to switch to a low-mem stealing approach.
+    /*uint8_t* optionRom = (uint8_t*)
+            mmap(NULL, 0x2000, PROT_READ, MAP_SHARED, optionFd, 0);
+    if (optionRom == (uint8_t*) -1) {
+        perror("Unable to mmap an anonymous page.");
+        return EXIT_FAILURE;
+    }
+    close(optionFd);*/
+
+    uint8_t* optionRom = (uint8_t*)
+            mmap(NULL, 0x2000, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    if (optionRom == (uint8_t*) -1) {
+        perror("Unable to mmap an anonymous page.");
+        return EXIT_FAILURE;
+    }
+    if (read(optionFd, optionRom, 0x2000) != 0x2000) {
+        fprintf(stderr, "failed to read 8 KiB from option rom file.\n");
+        return EXIT_FAILURE;
+    }
+    close(optionFd);
+
+    // open disk image
+    int diskFd = open("roms/drivec.img", O_RDWR | O_CLOEXEC);
+    if (diskFd == -1) {
+        perror("Unable to open disk image.");
+        return EXIT_FAILURE;
+    }
+
+    uint8_t* diskData = nullptr;
+#endif
+
     // mmap memory to back the RAM
-    uint8_t* ram = (uint8_t*)
-            mmap(NULL, 0xA0000, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    uint8_t* ram = (uint8_t*) mmap(NULL, LOW_MEMORY_SIZE + HIGH_MEMORY_SIZE, 
+            PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
     if (ram == (uint8_t*) -1) {
         perror("Unable to mmap an anonymous page for lowmem.");
         return EXIT_FAILURE;
@@ -232,12 +330,13 @@ int main (int argc, char** argv) {
     struct kvm_userspace_memory_region regionRam = {
         .slot = 0,
         .guest_phys_addr = 0,
-        .memory_size = 0xA0000,
+        .memory_size = LOW_MEMORY_SIZE,
         .userspace_addr = (uint64_t) ram
     };
 
     struct kvm_userspace_memory_region regionRomDos = {
         .slot = 1,
+        .flags = KVM_MEM_READONLY,
         .guest_phys_addr = 0xE0000,
         .memory_size = 0x10000,
         .userspace_addr = (uint64_t) flashMemory + 0x60000
@@ -245,6 +344,7 @@ int main (int argc, char** argv) {
 
     struct kvm_userspace_memory_region regionBios = {
         .slot = 2,
+        .flags = KVM_MEM_READONLY,
         .guest_phys_addr = 0xF0000,
         .memory_size = 0x10000,
         .userspace_addr = (uint64_t) flashMemory + 0x70000
@@ -263,12 +363,58 @@ int main (int argc, char** argv) {
         .memory_size = 0
     };
 
+#if (HIGH_MEMORY_SIZE)
+    struct kvm_userspace_memory_region regionRamWrapHighMem = {
+        .slot = 3,
+        .guest_phys_addr = 0x100000,
+        .memory_size = HIGH_MEMORY_SIZE,
+        .userspace_addr = (uint64_t) ram + LOW_MEMORY_SIZE
+    };
+#endif
+
     struct kvm_userspace_memory_region regionFlash = {
         .slot = 4,
+        .flags = KVM_MEM_READONLY,
         .guest_phys_addr = 0x03400000,
         .memory_size = 0x80000,
         .userspace_addr = (uint64_t) flashMemory
     };
+
+    struct kvm_userspace_memory_region regionFlash_Unmap = {
+        .slot = 4,
+        .memory_size = 0
+    };
+
+#if (defined VIRTUAL_DISK)
+    struct kvm_userspace_memory_region regionOptionRom = {
+        .slot = 5,
+        // TODO: we actually write to this region for each of use purposes
+        //.flags = KVM_MEM_READONLY,
+        .guest_phys_addr = 0xC8000,
+        .memory_size = 0x1000,
+        .userspace_addr = (uint64_t) optionRom
+    };
+
+    struct kvm_userspace_memory_region regionOptionRom_Boot = {
+        .slot = 6,
+        .flags = KVM_MEM_READONLY,
+        .guest_phys_addr = 0xC9000,
+        .memory_size = 0x1000,
+        .userspace_addr = (uint64_t) optionRom + 0x1000
+    };
+
+    struct kvm_userspace_memory_region regionOptionRom_Disk = {
+        .slot = 6,
+        .guest_phys_addr = 0xC9000,
+        .memory_size = 0x1000,
+        .userspace_addr = 0
+    };
+
+    struct kvm_userspace_memory_region regionOptionRom_Unmap = {
+        .slot = 6,
+        .memory_size = 0
+    };
+#endif
 
     ret = ioctl(vmFd, KVM_SET_USER_MEMORY_REGION, &regionRam);
     if (ret == -1) {
@@ -288,17 +434,35 @@ int main (int argc, char** argv) {
         return EXIT_FAILURE;
     }
 
-    ret = ioctl(vmFd, KVM_SET_USER_MEMORY_REGION, &regionRamWrap);
+#if HIGH_MEMORY_SIZE
+    // wrap is disabled (a20 line enabled) by default on 386EX
+    ret = ioctl(vmFd, KVM_SET_USER_MEMORY_REGION, &regionRamWrapHighMem);
     if (ret == -1) {
         perror("KVM_SET_USER_MEMORY_REGION");
         return EXIT_FAILURE;
     }
+#endif
 
     ret = ioctl(vmFd, KVM_SET_USER_MEMORY_REGION, &regionFlash);
     if (ret == -1) {
         perror("KVM_SET_USER_MEMORY_REGION");
         return EXIT_FAILURE;
     }
+
+#if (defined VIRTUAL_DISK)
+    ret = ioctl(vmFd, KVM_SET_USER_MEMORY_REGION, &regionOptionRom);
+    if (ret == -1) {
+        perror("KVM_SET_USER_MEMORY_REGION");
+        return EXIT_FAILURE;
+    }
+
+    ret = ioctl(vmFd, KVM_SET_USER_MEMORY_REGION, &regionOptionRom_Boot);
+    if (ret == -1) {
+        perror("KVM_SET_USER_MEMORY_REGION");
+        return EXIT_FAILURE;
+    }
+#endif
+
     // -----------------------------------------------------------------------------
 
     ret = ioctl(vmFd, KVM_CREATE_IRQCHIP);
@@ -459,6 +623,7 @@ int main (int argc, char** argv) {
             if (errno == EINTR) {
                 continue;
             } else {
+                fprintf(stderr, "internal error occurred: %s\n", strerror(errno));
                 break;
             }
         }
@@ -515,6 +680,7 @@ int main (int argc, char** argv) {
 
         switch (vcpuRun->exit_reason) {
             case KVM_EXIT_HLT:
+                fprintf(stderr, "halt instruction executed\n");
                 requestExit = 1;
                 break;
 
@@ -548,9 +714,22 @@ int main (int argc, char** argv) {
                 }
 
                 // check if the a20 register was changed
-                if (lastA20Register != a20register) {
-                    if (a20register) {
+                if ((lastA20Register & 2) != (a20register & 2)) {
+#if (HIGH_MEMORY_SIZE)
+                    // if we have high mem, we have to unmap memory before selecting upper memory
+                    // or wrapping the lower memory
+                    ret = ioctl(vmFd, KVM_SET_USER_MEMORY_REGION, &regionRamWrapDisabled);
+                    if (ret == -1) {
+                        perror("KVM_SET_USER_MEMORY_REGION");
+                        return EXIT_FAILURE;
+                    }
+#endif
+                    if (a20register & 2) {
+#if (HIGH_MEMORY_SIZE)
+                        ret = ioctl(vmFd, KVM_SET_USER_MEMORY_REGION, &regionRamWrapHighMem);
+#else
                         ret = ioctl(vmFd, KVM_SET_USER_MEMORY_REGION, &regionRamWrapDisabled);
+#endif
                         if (ret == -1) {
                             perror("KVM_SET_USER_MEMORY_REGION");
                             return EXIT_FAILURE;
@@ -564,6 +743,51 @@ int main (int argc, char** argv) {
                     }
                     lastA20Register = a20register;
                 }
+
+#if (defined VIRTUAL_DISK)
+                // check if the disk registers were changed
+                if (updateDiskMapping) {
+                    // unmap existing data
+                    ret = ioctl(vmFd, KVM_SET_USER_MEMORY_REGION, &regionOptionRom_Unmap);
+                    if (ret == -1) {
+                        perror("KVM_SET_USER_MEMORY_REGION (unmap disk)");
+                        return EXIT_FAILURE;
+                    }
+
+                    if (munmap(diskData, PAGE_SIZE) == -1) {
+                        perror("failed to unmap old disk data");
+                        return EXIT_FAILURE;
+                    }
+
+                    // map a new region
+                    diskData = (uint8_t*) mmap(nullptr, PAGE_SIZE, PROT_READ | PROT_WRITE,
+                            MAP_SHARED, diskFd, (off_t) selectedDiskLBA * 512);
+                    if (diskData == (uint8_t*) -1) {
+                        perror("failed to mmap disk data");
+                        return EXIT_FAILURE;
+                    }
+
+                    // first sector
+                    /*for (int i = 0; i < 4096; i += 8) {
+                        fprintf(stderr, "0x%08x: ", (selectedDiskLBA * 512) + i);
+                        for (int j = 0; j < 8; j++) {
+                            fprintf(stderr, "0x%02x ", diskData[i + j]);
+                        }
+                        fprintf(stderr, "\n");
+                    }
+                    fprintf(stderr, "\n");*/
+
+                    // update mapping
+                    regionOptionRom_Disk.userspace_addr = (uint64_t) diskData;
+                    ret = ioctl(vmFd, KVM_SET_USER_MEMORY_REGION, &regionOptionRom_Disk);
+                    if (ret == -1) {
+                        perror("KVM_SET_USER_MEMORY_REGION (map disk)");
+                        return EXIT_FAILURE;
+                    }
+                    updateDiskMapping = false;
+                    fprintf(stderr, "virtual disk: LBA mapped: %08x\n", selectedDiskLBA);
+                }
+#endif
             }
             break;
 
@@ -577,23 +801,111 @@ int main (int argc, char** argv) {
                         ring->first = (ring->first + 1) % KVM_COALESCED_MMIO_MAX;
                     }   
                 }*/
-                /*fprintf(stderr, "unhandled mmio exit: %s addr:%016llx length:%d ",
+#if (defined VIRTUAL_DISK)
+                // the flash disk is being accessed
+                if (vcpuRun->mmio.phys_addr >= 0x3400000 && vcpuRun->mmio.phys_addr < 0x3480000) {
+                    off_t offset = vcpuRun->mmio.phys_addr - 0x3400000;
+                    bool unmapFlash = false;
+                    bool mapFlash = false;
+
+                    //fprintf(stderr, "flash disk: %s: addr:%016lx length:%d ", vcpuRun->mmio.is_write ? "write" : "read", offset, vcpuRun->mmio.len);
+                    if (vcpuRun->mmio.is_write) {
+                        // Writing data to the flash disk
+                        assert(vcpuRun->mmio.len == 1);
+                        uint8_t command = *reinterpret_cast<uint8_t*>(vcpuRun->mmio.data);
+                        //fprintf(stderr, "data:%02x\n", command);
+                        if (flashState == FlashState::Program) {
+                            flashMemory[offset] = command;
+                            flashState = FlashState::Read;
+                        } else if (command == 0xF0) {
+                            // reset device
+                            flashState = FlashState::Read;
+                        } else if (flashState == FlashState::Read && ((offset & 0x7FF) == 0x555) && command == 0xAA) {
+                            flashState = FlashState::CommandByte_1;
+                        } else if (flashState == FlashState::CommandByte_1 && ((offset & 0x7FF) == 0x2AA) && command == 0x55) {
+                            flashState = FlashState::CommandByte_2;
+                        } else if (flashState == FlashState::CommandByte_2 && ((offset & 0x7FF) == 0x555) && command == 0x80) {
+                            flashState = FlashState::CommandByte_3;
+                        } else if (flashState == FlashState::CommandByte_3 && ((offset & 0x7FF) == 0x555) && command == 0xAA) {
+                            flashState = FlashState::CommandByte_4;
+                        } else if (flashState == FlashState::CommandByte_4 && ((offset & 0x7FF) == 0x2AA) && command == 0x55) {
+                            flashState = FlashState::CommandByte_5;
+                        } else if (flashState == FlashState::CommandByte_2 && ((offset & 0x7FF) == 0x555) && command == 0xA0) {
+                            flashState = FlashState::Program;
+                        } else if (flashState == FlashState::CommandByte_2 && ((offset & 0x7FF) == 0x555) && command == 0x90) {
+                            flashState = FlashState::ProductIdentification;
+                            unmapFlash = true;
+                            fprintf(stderr, "flash disk: detected product identification command.\n");
+                        } else if (flashState == FlashState::CommandByte_5 && command == 0x30) {
+                            // sector erase
+                            memset(flashMemory + (offset & 0x70000), 0xff, 0x10000);
+                            flashState = FlashState::Read;
+                            fprintf(stderr, "flash disk: sector erased: %016lx\n", offset & 0x70000);
+                        } else if (flashState == FlashState::CommandByte_5 && ((offset & 0x7FF) == 0x555) && command == 0x10) {
+                            // chip erase
+                            memset(flashMemory, 0xff, 0x80000);
+                            flashState = FlashState::Read;
+                            fprintf(stderr, "flash disk: chip erased\n");
+                        } else {
+                            fprintf(stderr, "flash disk: unknown command sequence.\n");
+                            flashState = FlashState::Read;
+                            return EXIT_FAILURE;
+                        }
+                    } else { 
+                        // Reading data from the flash disk
+                        //fprintf(stderr, "\n");
+                        if (flashState == FlashState::ProductIdentification) {
+                            mapFlash = true;
+                            *reinterpret_cast<uint8_t*>(vcpuRun->mmio.data) =
+                                    (offset & 1) ? 0xA4 : 0x01;
+                            fprintf(stderr, "flash disk: product identification read.\n");
+                        }
+                        flashState = FlashState::Read;
+                    }
+
+                    if (unmapFlash) {
+                        // unmap the flash memory (to control reads)
+                        ret = ioctl(vmFd, KVM_SET_USER_MEMORY_REGION, &regionFlash_Unmap);
+                        if (ret == -1) {
+                            perror("KVM_SET_USER_MEMORY_REGION (unmap flash)");
+                            return EXIT_FAILURE;
+                        }
+                    } else if (mapFlash) {
+                        // map the flash memory
+                        ret = ioctl(vmFd, KVM_SET_USER_MEMORY_REGION, &regionFlash);
+                        if (ret == -1) {
+                            perror("KVM_SET_USER_MEMORY_REGION (unmap flash)");
+                            return EXIT_FAILURE;
+                        }
+                    }
+                } else {
+#endif
+#if !(defined NDEBUG)
+                fprintf(stderr, "unhandled mmio exit: %s addr:%016llx length:%d ",
                     vcpuRun->mmio.is_write ? "write" : "read",
                     vcpuRun->mmio.phys_addr,
-                    vcpuRun->mmio.len);*/
+                    vcpuRun->mmio.len);
+#endif
                 if (vcpuRun->mmio.is_write) {
-                    /*if (vcpuRun->mmio.len == 1)
+#if !(defined NDEBUG)
+                    if (vcpuRun->mmio.len == 1)
                         fprintf(stderr, "data:%02x\n", *((uint8_t*) vcpuRun->mmio.data));
                     else if (vcpuRun->mmio.len == 2)
                         fprintf(stderr, "data:%04x\n", *((uint16_t*) vcpuRun->mmio.data));
                     else if (vcpuRun->mmio.len == 4)
                         fprintf(stderr, "data:%08x\n", *((uint32_t*) vcpuRun->mmio.data));
                     else if (vcpuRun->mmio.len == 8)
-                        fprintf(stderr, "data:%16lx\n", *((uint64_t*) vcpuRun->mmio.data));*/
+                        fprintf(stderr, "data:%16lx\n", *((uint64_t*) vcpuRun->mmio.data));
+#endif
                 } else {
-                    //fprintf(stderr, "\n");
+#if !(defined NDEBUG)
+                    fprintf(stderr, "\n");
+#endif
                     memset(vcpuRun->mmio.data, 0, sizeof vcpuRun->mmio.data);
                 }
+#if (defined VIRTUAL_DISK)
+                }
+#endif
                 break;
 
             default:

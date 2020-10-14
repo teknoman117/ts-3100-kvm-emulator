@@ -1,2 +1,5 @@
 build
 .vscode
+roms/drivec.img
+roms/flash.bin
+*.zst
