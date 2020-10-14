@@ -7,7 +7,7 @@ DS12887::DS12887() : registers{}, selectedRegister{}, ram{}
 {
     registers.D.validRamAndTime = true;
 
-    std::ifstream nvram("/tmp/3100.rtc.bin", std::ios_base::binary);
+    std::ifstream nvram("roms/cmos.bin", std::ios_base::binary);
     if (nvram.is_open()) {
         nvram.read((char *) ram.data(), ram.size());
     }
@@ -15,7 +15,7 @@ DS12887::DS12887() : registers{}, selectedRegister{}, ram{}
 
 DS12887::~DS12887()
 {
-    std::ofstream nvram("/tmp/3100.rtc.bin", std::ios_base::binary);
+    std::ofstream nvram("roms/cmos.bin", std::ios_base::binary);
     nvram.write((const char *) ram.data(), ram.size());
 }
 
