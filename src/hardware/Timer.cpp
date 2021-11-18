@@ -223,7 +223,7 @@ void ProgrammableIntervalTimer::resolveTimers() {
 // DevicePio 8 bit interface
 void ProgrammableIntervalTimer::iowrite8(uint16_t address, uint8_t data) {
     if ((address & 0x3) == 0x03) {
-        writeCommand({ .value = data });
+        writeCommand(ChannelCommand{ .value = data });
     } else {
         writeRegister(address & 0x3, data);
     }

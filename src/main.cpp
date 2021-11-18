@@ -327,6 +327,22 @@ int main (int argc, char** argv) {
         return EXIT_FAILURE;
     }
 
+#if 0
+    int vgaFd = open("roms/vga.bin", O_RDONLY | O_CLOEXEC);
+    if (vgaFd == -1) {
+        perror("unable to open vga rom.");
+        return EXIT_FAILURE;
+    }
+
+    uint8_t* vgaRom = (uint8_t*)
+            mmap(NULL, 0x8000, PROT_READ, MAP_SHARED, vgaFd, 0);
+    if (vgaRom == (uint8_t*) -1) {
+        perror("Unable to mmap an anonymous page.");
+        return EXIT_FAILURE;
+    }
+    close(vgaFd);
+#endif
+
     struct kvm_userspace_memory_region regionRam = {
         .slot = 0,
         .guest_phys_addr = 0,
@@ -416,6 +432,15 @@ int main (int argc, char** argv) {
     };
 #endif
 
+#if 0
+    struct kvm_userspace_memory_region regionVGARom = {
+        .slot = 7,
+        .guest_phys_addr = 0xC0000,
+        .memory_size = 0x8000,
+        .userspace_addr = (uint64_t) vgaRom
+    };
+#endif
+
     ret = ioctl(vmFd, KVM_SET_USER_MEMORY_REGION, &regionRam);
     if (ret == -1) {
         perror("KVM_SET_USER_MEMORY_REGION");
@@ -463,6 +488,13 @@ int main (int argc, char** argv) {
     }
 #endif
 
+#if 0
+    ret = ioctl(vmFd, KVM_SET_USER_MEMORY_REGION, &regionVGARom);
+    if (ret == -1) {
+        perror("KVM_SET_USER_MEMORY_REGION");
+        return EXIT_FAILURE;
+    }
+#endif
     // -----------------------------------------------------------------------------
 
     ret = ioctl(vmFd, KVM_CREATE_IRQCHIP);
@@ -645,6 +677,16 @@ int main (int argc, char** argv) {
                 codeBuffer = ram;
                 offset = sregs.cs.base + ip;
                 length = 0xA0000 - offset;
+            } else if (sregs.cs.base < 0xC0000) {
+                // ?
+            } else if (sregs.cs.base < 0xC8000) {
+                codeBuffer = vgaRom;
+                offset = (sregs.cs.base + ip) - 0xC0000;
+                length = 0x8000 - ip;
+            } else if (sregs.cs.base < 0xD0000) {
+                codeBuffer = optionRom;
+                offset = (sregs.cs.base + ip) - 0xC8000;
+                length = 0x2000 - ip;
             } else if (sregs.cs.base < 0xF0000) {
                 codeBuffer = flashMemory + 0x60000;
                 offset = (sregs.cs.base + ip) - 0xE0000;

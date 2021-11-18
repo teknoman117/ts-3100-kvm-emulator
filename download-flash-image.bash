@@ -25,7 +25,7 @@ cat 3100DISK.BIN DOS404.BIN 3100BIOS.BIN > roms/flash.bin
 echo "> Copying TS-3100 sample disk into drivec.img"
 echo "  (sudo is being used to mount the disk image)"
 sudo losetup /dev/loop0 roms/drivec.img || die "Failed to bind roms/drivec.img to /dev/loop0"
-#sudo partprobe /dev/loop0 || die "Failed to probe for partitions"
+sudo partprobe /dev/loop0 || die "Failed to probe for partitions"
 sudo mount /dev/loop0p1 ${PWD}/roms/drivec || die "Failed to mount /dev/loop0"
 sudo unzip TS-3100.ZIP -d roms/drivec || die "Failed to extract TS-3100.ZIP contents"
 sudo umount roms/drivec || die "Failed to unmount drivec"
