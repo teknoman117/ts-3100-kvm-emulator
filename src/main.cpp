@@ -396,14 +396,27 @@ int main (int argc, char** argv) {
         .userspace_addr = (uint64_t) flashMemory
     };
 
+    struct kvm_userspace_memory_region regionFlashAlias = {
+        .slot = 5,
+        .flags = KVM_MEM_READONLY,
+        .guest_phys_addr = 0x03480000,
+        .memory_size = 0x80000,
+        .userspace_addr = (uint64_t) flashMemory
+    };
+
     struct kvm_userspace_memory_region regionFlash_Unmap = {
         .slot = 4,
         .memory_size = 0
     };
 
+    struct kvm_userspace_memory_region regionFlashAlias_Unmap = {
+        .slot = 5,
+        .memory_size = 0
+    };
+
 #if (defined VIRTUAL_DISK)
     struct kvm_userspace_memory_region regionOptionRom = {
-        .slot = 5,
+        .slot = 6,
         // TODO: we actually write to this region for each of use purposes
         //.flags = KVM_MEM_READONLY,
         .guest_phys_addr = 0xC8000,
@@ -412,7 +425,7 @@ int main (int argc, char** argv) {
     };
 
     struct kvm_userspace_memory_region regionOptionRom_Boot = {
-        .slot = 6,
+        .slot = 7,
         .flags = KVM_MEM_READONLY,
         .guest_phys_addr = 0xC9000,
         .memory_size = 0x1000,
@@ -420,21 +433,21 @@ int main (int argc, char** argv) {
     };
 
     struct kvm_userspace_memory_region regionOptionRom_Disk = {
-        .slot = 6,
+        .slot = 7,
         .guest_phys_addr = 0xC9000,
         .memory_size = 0x1000,
         .userspace_addr = 0
     };
 
     struct kvm_userspace_memory_region regionOptionRom_Unmap = {
-        .slot = 6,
+        .slot = 7,
         .memory_size = 0
     };
 #endif
 
 #if 0
     struct kvm_userspace_memory_region regionVGARom = {
-        .slot = 7,
+        .slot = 8,
         .guest_phys_addr = 0xC0000,
         .memory_size = 0x8000,
         .userspace_addr = (uint64_t) vgaRom
@@ -469,6 +482,12 @@ int main (int argc, char** argv) {
 #endif
 
     ret = ioctl(vmFd, KVM_SET_USER_MEMORY_REGION, &regionFlash);
+    if (ret == -1) {
+        perror("KVM_SET_USER_MEMORY_REGION");
+        return EXIT_FAILURE;
+    }
+
+    ret = ioctl(vmFd, KVM_SET_USER_MEMORY_REGION, &regionFlashAlias);
     if (ret == -1) {
         perror("KVM_SET_USER_MEMORY_REGION");
         return EXIT_FAILURE;
@@ -548,15 +567,15 @@ int main (int argc, char** argv) {
     }
 
     sregs.cr0 = 0;
-    sregs.cs.base = 0x000FFFF0;
-    sregs.cs.selector = 0xFFFF;
+    sregs.cs.base = 0x03470000;
+    sregs.cs.selector = 0xF000;
     ret = ioctl(vcpuFd, KVM_SET_SREGS, &sregs);
     if (ret == -1) {
         perror("KVM_SET_SREGS");
         return EXIT_FAILURE;
     }
 
-    struct kvm_regs regs = { .rip = 0 };
+    struct kvm_regs regs = { .rip = 0x0000FFF0 };
     ret = ioctl(vcpuFd, KVM_SET_REGS, &regs);
     if (ret == -1) {
         perror("KVM_GET_REGS");
@@ -637,8 +656,10 @@ int main (int argc, char** argv) {
 
 #ifdef DISASSEMBLE
     // setup a disassembly library
-    ZydisDecoder decoder;
-    ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_REAL_16, ZYDIS_ADDRESS_WIDTH_16);
+    ZydisDecoder decoderReal, decoderP16, decoderP32;
+    ZydisDecoderInit(&decoderReal, ZYDIS_MACHINE_MODE_REAL_16,   ZYDIS_ADDRESS_WIDTH_16);
+    ZydisDecoderInit(&decoderP16,  ZYDIS_MACHINE_MODE_LEGACY_16, ZYDIS_ADDRESS_WIDTH_16);
+    ZydisDecoderInit(&decoderP32,  ZYDIS_MACHINE_MODE_LEGACY_32, ZYDIS_ADDRESS_WIDTH_32);
     ZydisFormatter formatter;
     ZydisFormatterInit(&formatter, ZYDIS_FORMATTER_STYLE_INTEL);
 #endif /* NDEBUG */
@@ -668,45 +689,68 @@ int main (int argc, char** argv) {
         ioctl(vcpuFd, KVM_GET_SREGS, &sregs);
 
         if (!previousWasDebug || vcpuRun->exit_reason == KVM_EXIT_DEBUG) {
-            // get the instruction state
-            ZyanUSize ip = regs.rip & 0xFFFF;
+            // figure out the memory region the instruction pointer is in
+            ZyanUSize ip = sregs.cs.base + regs.rip;
             ZyanUSize offset = 0;
             ZyanUSize length = 0;
-            void* codeBuffer = NULL;
-            if (sregs.cs.base < 0xA0000) {
+            uint8_t* codeBuffer = NULL;
+            if (ip < 0xA0000) {
                 codeBuffer = ram;
-                offset = sregs.cs.base + ip;
+                offset = ip;
                 length = 0xA0000 - offset;
-            } else if (sregs.cs.base < 0xC0000) {
-                // ?
-            } else if (sregs.cs.base < 0xC8000) {
+            }
+#if 0
+            else if (ip >= 0xC0000 && ip < 0xC8000) {
                 codeBuffer = vgaRom;
-                offset = (sregs.cs.base + ip) - 0xC0000;
+                offset = ip & 0x7FFF;
                 length = 0x8000 - ip;
-            } else if (sregs.cs.base < 0xD0000) {
+            }
+#endif
+            else if (ip >= 0xC8000 && ip < 0xCA000) {
                 codeBuffer = optionRom;
-                offset = (sregs.cs.base + ip) - 0xC8000;
+                offset = ip & 0x1FFF;
                 length = 0x2000 - ip;
-            } else if (sregs.cs.base < 0xF0000) {
+            } else if (ip >= 0xE0000 && ip < 0xF0000) {
                 codeBuffer = flashMemory + 0x60000;
-                offset = (sregs.cs.base + ip) - 0xE0000;
+                offset = ip & 0xFFFF;
                 length = 0x10000 - ip;
-            } else if (sregs.cs.base < 0x100000) {
+            } else if (ip >= 0xF0000 && ip < 0x100000) {
                 codeBuffer = flashMemory + 0x70000;
-                offset = (sregs.cs.base + ip) - 0xF0000;
+                offset = ip & 0xFFFF;
                 length = 0x10000 - ip;
-            } else {
+            } else if (ip >= 0x3400000 && ip <= 0x34FFFFF) {
                 codeBuffer = flashMemory;
-                offset = (sregs.cs.base + ip) - 0x3400000;
+                offset = ip & 0x7FFFF;
                 length = 0x80000 - offset;
             }
 
             ZydisDecodedInstruction instruction;
             int count = 8;
             fprintf(stderr, "--- next instructions ---\n");
-            while (count--
-                    && ZYAN_SUCCESS(ZydisDecoderDecodeBuffer(&decoder, codeBuffer + offset, length, &instruction))) {
-                fprintf(stderr, "[%08llx:%04lx]  ", sregs.cs.base, ip);
+            while (count--) {
+                if (sregs.cr0 & 1) {
+                    // protected mode
+                    if (sregs.cs.db) {
+                        // 32-bit protected mode
+                        if (!ZYAN_SUCCESS(ZydisDecoderDecodeBuffer(&decoderP32, codeBuffer + offset, length, &instruction))) {
+                            break;
+                        }
+                        fprintf(stderr, "[%08llx:%08llx]  ", sregs.cs.base, ip - sregs.cs.base);
+                    } else {
+                        // 16-bit protected mode
+                        if (!ZYAN_SUCCESS(ZydisDecoderDecodeBuffer(&decoderP16, codeBuffer + offset, length, &instruction))) {
+                            break;
+                        }
+                        fprintf(stderr, "[%08llx:%04llx]  ", sregs.cs.base, ip - sregs.cs.base);
+                    }
+                } else {
+                    // real mode
+                    if (!ZYAN_SUCCESS(ZydisDecoderDecodeBuffer(&decoderReal, codeBuffer + offset, length, &instruction))) {
+                        break;
+                    }
+                    fprintf(stderr, "[%08llx:%04llx]  ", sregs.cs.base, ip - sregs.cs.base);
+                }
+
                 char buffer[256];
                 ZydisFormatterFormatInstruction(&formatter, &instruction, buffer, sizeof buffer, regs.rip);
                 fprintf(stderr, "%s\n", buffer);
@@ -845,8 +889,8 @@ int main (int argc, char** argv) {
                 }*/
 #if (defined VIRTUAL_DISK)
                 // the flash disk is being accessed
-                if (vcpuRun->mmio.phys_addr >= 0x3400000 && vcpuRun->mmio.phys_addr < 0x3480000) {
-                    off_t offset = vcpuRun->mmio.phys_addr - 0x3400000;
+                if (vcpuRun->mmio.phys_addr >= 0x3400000 && vcpuRun->mmio.phys_addr < 0x350000) {
+                    off_t offset = vcpuRun->mmio.phys_addr & 0x7FFFF;
                     bool unmapFlash = false;
                     bool mapFlash = false;
 
@@ -912,11 +956,21 @@ int main (int argc, char** argv) {
                             perror("KVM_SET_USER_MEMORY_REGION (unmap flash)");
                             return EXIT_FAILURE;
                         }
+                        ret = ioctl(vmFd, KVM_SET_USER_MEMORY_REGION, &regionFlashAlias_Unmap);
+                        if (ret == -1) {
+                            perror("KVM_SET_USER_MEMORY_REGION (unmap flash alias)");
+                            return EXIT_FAILURE;
+                        }
                     } else if (mapFlash) {
                         // map the flash memory
                         ret = ioctl(vmFd, KVM_SET_USER_MEMORY_REGION, &regionFlash);
                         if (ret == -1) {
-                            perror("KVM_SET_USER_MEMORY_REGION (unmap flash)");
+                            perror("KVM_SET_USER_MEMORY_REGION (map flash)");
+                            return EXIT_FAILURE;
+                        }
+                        ret = ioctl(vmFd, KVM_SET_USER_MEMORY_REGION, &regionFlashAlias);
+                        if (ret == -1) {
+                            perror("KVM_SET_USER_MEMORY_REGION (map flash alias)");
                             return EXIT_FAILURE;
                         }
                     }
